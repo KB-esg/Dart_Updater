@@ -227,71 +227,88 @@ class DartReportUpdater:
 
 
 def main():
-   try:
-       # 종목 정보 설정
-       COMPANY_INFO = {
-           'code': '018260',
-           'name': '삼성에스디에스',
-           'spreadsheet_var': 'SDS_SPREADSHEET_ID'
-       }
-       
-       print(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
-       updater = DartReportUpdater(COMPANY_INFO['code'], COMPANY_INFO['spreadsheet_var'])
-       
-       # DART 보고서 시트들 업데이트
-       updater.update_dart_reports()
-       print("보고서 시트 업데이트 완료")
-       
-       print("Dart_Archive 시트 업데이트 시작")
-       try:
-           archive = updater.workbook.worksheet('Dart_Archive')
-           print("Archive 시트 접근 성공")
-           
-           sheet_values = archive.get_all_values()
-           if not sheet_values:
-               raise ValueError("Dart_Archive 시트가 비어있습니다")
-           
-           last_col = len(sheet_values[0])
-           print(f"현재 마지막 열: {last_col}, 전체 행 수: {len(sheet_values)}")
-           
-           control_value = archive.cell(1, last_col).value
-           print(f"Control value: {control_value}")
-           
-           # 시작 행 결정
-           if not control_value:
-               data = archive.col_values(last_col)
-               print(f"마지막 열 데이터: {data[:10]}...")  # 처음 10개 값만 출력
-               
-               try:
-                   last_row_with_data = len(data) - next(i for i, x in enumerate(reversed(data)) if x) - 1
-                   start_row = max(last_row_with_data + 1, 7)
-               except StopIteration:
-                   print("마지막 열에서 데이터를 찾을 수 없음, 기본값 사용")
-                   start_row = 7
-           else:
-               last_col += 1
-               start_row = 947
-               
-           print(f"처리 시작 행: {start_row}, 대상 열: {last_col}")
-           updater.process_archive_data(archive, start_row, last_col)
-           print("Dart_Archive 시트 업데이트 완료")
-           
-       except gspread.exceptions.APIError as e:
-           print(f"Google Sheets API 오류: {str(e)}")
-           if 'Quota exceeded' in str(e):
-               print("API 할당량 초과. 잠시 후 다시 시도해주세요.")
-           raise
-       except Exception as e:
-           print(f"예상치 못한 오류 발생: {type(e).__name__} - {str(e)}")
-           import traceback
-           print(traceback.format_exc())
-           raise
+    try:
+        import sys
+        
+        def log(msg):
+            print(msg)
+            sys.stdout.flush()  # 즉시 출력 보장
+        
+        # 종목 정보 설정
+        COMPANY_INFO = {
+            'code': '018260',
+            'name': '삼성에스디에스',
+            'spreadsheet_var': 'SDS_SPREADSHEET_ID'
+        }
+        
+        log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
+        updater = DartReportUpdater(COMPANY_INFO['code'], COMPANY_INFO['spreadsheet_var'])
+        
+        # DART 보고서 시트들 업데이트
+        updater.update_dart_reports()
+        log("보고서 시트 업데이트 완료")
+        
+        log("Dart_Archive 시트 업데이트 시작")
+        try:
+            archive = updater.workbook.worksheet('Dart_Archive')
+            log("1. Archive 시트 접근 성공")
+            
+            try:
+                sheet_values = archive.get_all_values()
+                log("2. 시트 값 가져오기 성공")
+                if not sheet_values:
+                    raise ValueError("Dart_Archive 시트가 비어있습니다")
+                
+                last_col = len(sheet_values[0])
+                log(f"3. 현재 마지막 열: {last_col}, 전체 행 수: {len(sheet_values)}")
+                
+                control_value = archive.cell(1, last_col).value
+                log(f"4. Control value: {control_value}")
+                
+                # 시작 행 결정
+                if not control_value:
+                    log("5-1. Control value가 없음, 마지막 데이터 위치 찾기 시작")
+                    data = archive.col_values(last_col)
+                    log(f"5-2. 마지막 열 데이터 샘플: {data[:5]}...")
+                    
+                    try:
+                        last_row_with_data = len(data) - next(i for i, x in enumerate(reversed(data)) if x) - 1
+                        start_row = max(last_row_with_data + 1, 7)
+                        log(f"5-3. 마지막 데이터 행: {last_row_with_data}")
+                    except StopIteration:
+                        log("5-4. 마지막 열에서 데이터를 찾을 수 없음, 기본값 사용")
+                        start_row = 7
+                else:
+                    log("5-1. Control value 존재, 새 열 사용")
+                    last_col += 1
+                    start_row = 947
+                    
+                log(f"6. 최종 처리 시작 행: {start_row}, 대상 열: {last_col}")
+                updater.process_archive_data(archive, start_row, last_col)
+                log("7. Dart_Archive 시트 업데이트 완료")
+                
+            except gspread.exceptions.APIError as e:
+                log(f"Google Sheets API 오류 발생: {str(e)}")
+                if 'Quota exceeded' in str(e):
+                    log("API 할당량 초과. 잠시 후 다시 시도해주세요.")
+                raise
+            except Exception as e:
+                log(f"시트 처리 중 오류 발생: {type(e).__name__} - {str(e)}")
+                import traceback
+                log(traceback.format_exc())
+                raise
+                
+        except Exception as e:
+            log(f"Dart_Archive 시트 접근 중 오류 발생: {type(e).__name__} - {str(e)}")
+            import traceback
+            log(traceback.format_exc())
+            raise
 
-   except Exception as e:
-       print(f"작업 중 오류 발생: {str(e)}")
-       print(f"오류 상세 정보: {type(e).__name__}")
-       import traceback
-       print(traceback.format_exc())
-       raise
+    except Exception as e:
+        log(f"전체 작업 중 오류 발생: {type(e).__name__} - {str(e)}")
+        import traceback
+        log(traceback.format_exc())
+        raise
+
 if __name__ == "__main__":
     main()
