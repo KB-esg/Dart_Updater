@@ -12,7 +12,7 @@ jobs:
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-      SPREADSHEET_ID: ${{ secrets.018260_SPREADSHEET_ID }}
+      SPREADSHEET_ID: ${{ secrets.SDS_SPREADSHEET_ID }}
 
     steps:
       - uses: actions/checkout@v2
@@ -28,5 +28,5 @@ jobs:
           pip install gspread oauth2client google-auth google-auth-oauthlib google-auth-httplib2 
           pip install opendartreader pandas beautifulsoup4 html_table_parser tqdm
 
-      - name: Run DART update script
-        run: python dart_update.py
+      - name: Run 018260 DART update script
+        run: python 018260_update.py
