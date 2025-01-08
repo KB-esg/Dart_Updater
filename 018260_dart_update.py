@@ -16,11 +16,20 @@ class SamsungSDSUpdater:
         'I. 회사의 개요', 'II. 사업의 내용', '1. 요약재무정보',
         '2. 연결재무제표', '3. 연결재무제표 주석', '4. 재무제표',
         '5. 재무제표 주석', '6. 배당에 관한 사항', '8. 기타 재무에 관한 사항',
-        'VII. 주주에 관한 사항', 'VIII. 임원 및 직원 등에 관한 사항', 'IX. 계열회사 등에 관한 사항',
+        'VII. 주주에 관한 사항', 'VIII. 임원 및 직원 등에 관한 사항',
         'X. 대주주 등과의 거래내용', 'XI. 그 밖에 투자자 보호를 위하여 필요한 사항'
     ]
 
     def __init__(self):
+        # 환경변수 확인을 위한 디버깅 코드
+        print("환경변수 확인:")
+        print("DART_API_KEY 존재:", 'DART_API_KEY' in os.environ)
+        print("GOOGLE_CREDENTIALS 존재:", 'GOOGLE_CREDENTIALS' in os.environ)
+        print("SDS_SPREADSHEET_ID 존재:", 'SDS_SPREADSHEET_ID' in os.environ)
+        
+        if 'SDS_SPREADSHEET_ID' not in os.environ:
+            raise ValueError("SDS_SPREADSHEET_ID 환경변수가 설정되지 않았습니다.")
+            
         self.credentials = self.get_credentials()
         self.gc = gspread.authorize(self.credentials)
         self.dart = OpenDartReader(os.environ['DART_API_KEY'])
