@@ -29,4 +29,4 @@ jobs:
           pip install opendartreader pandas beautifulsoup4 html_table_parser tqdm
 
       - name: Run 018260 DART update script
-        run: python 018260_update.py
+        run: python 018260_dart_update.py
