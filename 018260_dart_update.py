@@ -19,6 +19,164 @@ class DartReportUpdater:
         'X. 대주주 등과의 거래내용', 'XI. 그 밖에 투자자 보호를 위하여 필요한 사항'
     ]
 
+
+    def __init__(self, corp_code, spreadsheet_var_name):
+        """
+        초기화
+        :param corp_code: 종목 코드 (예: '018260')
+        :param spreadsheet_var_name: 스프레드시트 환경변수 이름 (예: 'SDS_SPREADSHEET_ID')
+        """
+        self.corp_code = corp_code
+        self.spreadsheet_var_name = spreadsheet_var_name
+        
+        # 환경변수 확인
+        print("환경변수 확인:")
+        print("DART_API_KEY 존재:", 'DART_API_KEY' in os.environ)
+        print("GOOGLE_CREDENTIALS 존재:", 'GOOGLE_CREDENTIALS' in os.environ)
+        print(f"{spreadsheet_var_name} 존재:", spreadsheet_var_name in os.environ)
+        
+        if spreadsheet_var_name not in os.environ:
+            raise ValueError(f"{spreadsheet_var_name} 환경변수가 설정되지 않았습니다.")
+            
+        self.credentials = self.get_credentials()
+        self.gc = gspread.authorize(self.credentials)
+        self.dart = OpenDartReader(os.environ['DART_API_KEY'])
+        self.workbook = self.gc.open_by_key(os.environ[spreadsheet_var_name])
+
+    def get_credentials(self):
+        """Google Sheets 인증 설정"""
+        creds_json = json.loads(os.environ['GOOGLE_CREDENTIALS'])
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+        return Credentials.from_service_account_info(creds_json, scopes=scopes)
+
+    def get_recent_dates(self):
+        """최근 3개월 날짜 범위 계산"""
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=90)
+        return start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
+
+    def update_dart_reports(self):
+        """DART 보고서 데이터 업데이트"""
+        start_date, end_date = self.get_recent_dates()
+        report_list = self.dart.list(self.corp_code, start_date, end_date, kind='A', final='T')
+        
+        if not report_list.empty:
+            for _, report in report_list.iterrows():
+                self.process_report(report['rcept_no'])
+                print(f"보고서 처리 완료: {report['report_nm']}")
+
+    def process_report(self, rcept_no):
+        """개별 보고서 처리"""
+        report_index = self.dart.sub_docs(rcept_no)
+        target_docs = report_index[report_index['title'].isin(self.TARGET_SHEETS)]
+        
+        for _, doc in target_docs.iterrows():
+            self.update_worksheet(doc['title'], doc['url'])
+
+    def update_worksheet(self, sheet_name, url):
+        """워크시트 업데이트"""
+        try:
+            worksheet = self.workbook.worksheet(sheet_name)
+        except gspread.exceptions.WorksheetNotFound:
+            worksheet = self.workbook.add_worksheet(sheet_name, 1000, 10)
+            
+        response = requests.get(url)
+        if response.status_code == 200:
+            self.process_html_content(worksheet, response.text)
+            print(f"시트 업데이트 완료: {sheet_name}")
+
+    def process_html_content(self, worksheet, html_content):
+        """HTML 내용 처리 및 워크시트 업데이트"""
+        soup = BeautifulSoup(html_content, 'html.parser')
+        tables = soup.find_all("table")
+        
+        worksheet.clear()
+        all_data = []
+        
+        for table in tables:
+            table_data = parser.make2d(table)
+            if table_data:
+                all_data.extend(table_data)
+        
+        # 더 작은 배치 크기와 더 긴 지연 시간 설정
+        BATCH_SIZE = 50  # 배치 크기 축소
+        MAX_RETRIES = 5  # 최대 재시도 횟수
+        
+        for i in range(0, len(all_data), BATCH_SIZE):
+            batch = all_data[i:i + BATCH_SIZE]
+            retry_count = 0
+            success = False
+            
+            while not success and retry_count < MAX_RETRIES:
+                try:
+                    worksheet.append_rows(batch)
+                    time.sleep(3)  # 배치 사이 지연 시간 증가
+                    success = True
+                    print(f"배치 업데이트 성공: {i+1}~{min(i+BATCH_SIZE, len(all_data))} 행")
+                except gspread.exceptions.APIError as e:
+                    if 'Quota exceeded' in str(e):
+                        retry_count += 1
+                        wait_time = 60 * (retry_count + 1)  # 재시도마다 대기 시간 증가
+                        print(f"할당량 제한 도달. {wait_time}초 대기 후 {retry_count}번째 재시도...")
+                        time.sleep(wait_time)
+                    else:
+                        raise e
+            
+            if not success:
+                print(f"최대 재시도 횟수 초과. 배치 {i//BATCH_SIZE + 1} 처리 실패")
+                raise Exception("API 할당량 문제로 인한 업데이트 실패")
+
+    def remove_parentheses(self, value):
+        """괄호 내용 및 % 기호 제거"""
+        if not value:
+            return value
+        return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
+
+    def update_archive_status(self, archive, last_col):
+        """아카이브 상태 업데이트"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        archive.update_cell(1, last_col, '1')
+        archive.update_cell(1, 10, today)
+        archive.update_cell(5, last_col, today)
+
+def main():
+    # 종목 정보 설정
+    COMPANY_INFO = {
+        'code': '018260',
+        'name': '삼성에스디에스',
+        'spreadsheet_var': 'SDS_SPREADSHEET_ID'
+    }
+    
+    print(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
+    updater = DartReportUpdater(COMPANY_INFO['code'], COMPANY_INFO['spreadsheet_var'])
+    
+    # DART 보고서 시트들 업데이트
+    updater.update_dart_reports()
+    print("보고서 시트 업데이트 완료")
+    
+    # Dart_Archive 시트 업데이트
+    print("Dart_Archive 시트 업데이트 시작")
+    archive = updater.workbook.worksheet('Dart_Archive')
+    last_col = len(archive.get_all_values()[0])
+    control_value = archive.cell(1, last_col).value
+    
+    # 시작 행 결정
+    if not control_value:
+        data = archive.col_values(last_col)
+        last_row_with_data = len(data) - next(i for i, x in enumerate(reversed(data)) if x) - 1
+        start_row = max(last_row_with_data + 1, 7)
+    else:
+        last_col += 1
+        start_row = 947
+    
+    updater.process_archive_data(archive, start_row, last_col)
+    print("Dart_Archive 시트 업데이트 완료")
+
+if __name__ == "__main__":
+    main()    
     def __init__(self, corp_code, spreadsheet_var_name):
         """
         초기화
