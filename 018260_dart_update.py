@@ -249,9 +249,8 @@ def main():
         
         def log(msg):
             print(msg)
-            sys.stdout.flush()  # 즉시 출력 보장
+            sys.stdout.flush()
         
-        # 종목 정보 설정
         COMPANY_INFO = {
             'code': '018260',
             'name': '삼성에스디에스',
@@ -261,7 +260,6 @@ def main():
         log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
         updater = DartReportUpdater(COMPANY_INFO['code'], COMPANY_INFO['spreadsheet_var'])
         
-        # DART 보고서 시트들 업데이트
         updater.update_dart_reports()
         log("보고서 시트 업데이트 완료")
         
@@ -275,22 +273,33 @@ def main():
                 raise ValueError("Dart_Archive 시트가 비어있습니다")
             
             last_col = len(sheet_values[0])
-            log(f"현재 마지막 열: {last_col}, 전체 행 수: {len(sheet_values)}")
+            current_cols = archive.col_count  # 현재 열 수 확인
+            log(f"현재 마지막 열: {last_col}, 전체 행 수: {len(sheet_values)}, 시트 열 수: {current_cols}")
             
             control_value = archive.cell(1, last_col).value
             log(f"Control value: {control_value}")
             
-            # 시작 행 결정
+            # 다음 열이 필요한 경우 시트 크기 조정
+            if control_value or (last_col >= current_cols - 1):
+                new_cols = current_cols + 10  # 한 번에 10개의 열을 추가
+                try:
+                    archive.resize(rows=archive.row_count, cols=new_cols)
+                    log(f"시트 크기를 {new_cols}열로 조정했습니다.")
+                    current_cols = new_cols
+                except Exception as e:
+                    log(f"시트 크기 조정 중 오류 발생: {str(e)}")
+                    raise
+            
             if not control_value:
                 data = archive.col_values(last_col)
                 try:
                     last_row_with_data = len(data) - next(i for i, x in enumerate(reversed(data)) if x) - 1
-                    start_row = max(last_row_with_data + 1, 10)  # 시작 행을 10으로 변경
+                    start_row = max(last_row_with_data + 1, 10)
                 except StopIteration:
-                    start_row = 10  # 기본 시작 행을 10으로 설정
+                    start_row = 10
             else:
                 last_col += 1
-                start_row = 10  # 시작 행을 10으로 변경
+                start_row = 10
             
             log(f"처리 시작 행: {start_row}, 대상 열: {last_col}")
             updater.process_archive_data(archive, start_row, last_col)
@@ -308,6 +317,9 @@ def main():
         import traceback
         log(traceback.format_exc())
         raise
+
+if __name__ == "__main__":
+    main()
 
 if __name__ == "__main__":
     main()
