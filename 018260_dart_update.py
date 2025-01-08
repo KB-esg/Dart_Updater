@@ -227,66 +227,71 @@ class DartReportUpdater:
 
 
 def main():
-    try:
-        # 종목 정보 설정
-        COMPANY_INFO = {
-            'code': '018260',
-            'name': '삼성에스디에스',
-            'spreadsheet_var': 'SDS_SPREADSHEET_ID'
-        }
-        
-        print(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
-        updater = DartReportUpdater(COMPANY_INFO['code'], COMPANY_INFO['spreadsheet_var'])
-        
-        # DART 보고서 시트들 업데이트
-        updater.update_dart_reports()
-        print("보고서 시트 업데이트 완료")
-        
-        # Dart_Archive 시트 업데이트
-        print("Dart_Archive 시트 업데이트 시작")
-        try:
-            archive = updater.workbook.worksheet('Dart_Archive')
-        except Exception as e:
-            print(f"Dart_Archive 시트를 찾을 수 없음: {str(e)}")
-            raise
-            
-        try:
-            last_col = len(archive.get_all_values()[0])
-            print(f"현재 마지막 열: {last_col}")
-        except Exception as e:
-            print(f"열 정보 가져오기 실패: {str(e)}")
-            raise
-            
-        try:
-            control_value = archive.cell(1, last_col).value
-            print(f"Control value: {control_value}")
-        except Exception as e:
-            print(f"Control value 가져오기 실패: {str(e)}")
-            raise
-        
-        # 시작 행 결정
-        try:
-            if not control_value:
-                data = archive.col_values(last_col)
-                last_row_with_data = len(data) - next(i for i, x in enumerate(reversed(data)) if x) - 1
-                start_row = max(last_row_with_data + 1, 7)
-            else:
-                last_col += 1
-                start_row = 947
-            print(f"처리 시작 행: {start_row}, 대상 열: {last_col}")
-        except Exception as e:
-            print(f"시작 행 결정 중 오류 발생: {str(e)}")
-            raise
-        
-        updater.process_archive_data(archive, start_row, last_col)
-        print("Dart_Archive 시트 업데이트 완료")
-        
-    except Exception as e:
-        print(f"작업 중 오류 발생: {str(e)}")
-        print(f"오류 상세 정보: {type(e).__name__}")
-        import traceback
-        print(traceback.format_exc())
-        raise
+   try:
+       # 종목 정보 설정
+       COMPANY_INFO = {
+           'code': '018260',
+           'name': '삼성에스디에스',
+           'spreadsheet_var': 'SDS_SPREADSHEET_ID'
+       }
+       
+       print(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
+       updater = DartReportUpdater(COMPANY_INFO['code'], COMPANY_INFO['spreadsheet_var'])
+       
+       # DART 보고서 시트들 업데이트
+       updater.update_dart_reports()
+       print("보고서 시트 업데이트 완료")
+       
+       print("Dart_Archive 시트 업데이트 시작")
+       try:
+           archive = updater.workbook.worksheet('Dart_Archive')
+           print("Archive 시트 접근 성공")
+           
+           sheet_values = archive.get_all_values()
+           if not sheet_values:
+               raise ValueError("Dart_Archive 시트가 비어있습니다")
+           
+           last_col = len(sheet_values[0])
+           print(f"현재 마지막 열: {last_col}, 전체 행 수: {len(sheet_values)}")
+           
+           control_value = archive.cell(1, last_col).value
+           print(f"Control value: {control_value}")
+           
+           # 시작 행 결정
+           if not control_value:
+               data = archive.col_values(last_col)
+               print(f"마지막 열 데이터: {data[:10]}...")  # 처음 10개 값만 출력
+               
+               try:
+                   last_row_with_data = len(data) - next(i for i, x in enumerate(reversed(data)) if x) - 1
+                   start_row = max(last_row_with_data + 1, 7)
+               except StopIteration:
+                   print("마지막 열에서 데이터를 찾을 수 없음, 기본값 사용")
+                   start_row = 7
+           else:
+               last_col += 1
+               start_row = 947
+               
+           print(f"처리 시작 행: {start_row}, 대상 열: {last_col}")
+           updater.process_archive_data(archive, start_row, last_col)
+           print("Dart_Archive 시트 업데이트 완료")
+           
+       except gspread.exceptions.APIError as e:
+           print(f"Google Sheets API 오류: {str(e)}")
+           if 'Quota exceeded' in str(e):
+               print("API 할당량 초과. 잠시 후 다시 시도해주세요.")
+           raise
+       except Exception as e:
+           print(f"예상치 못한 오류 발생: {type(e).__name__} - {str(e)}")
+           import traceback
+           print(traceback.format_exc())
+           raise
 
+   except Exception as e:
+       print(f"작업 중 오류 발생: {str(e)}")
+       print(f"오류 상세 정보: {type(e).__name__}")
+       import traceback
+       print(traceback.format_exc())
+       raise
 if __name__ == "__main__":
     main()
