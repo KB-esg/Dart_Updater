@@ -11,8 +11,7 @@ from bs4 import BeautifulSoup
 from html_table_parser import parser_functions as parser
 import pandas as pd
 
-class SamsungSDSUpdater:
-    CORP_CODE = '018260'  # 삼성에스디에스 종목코드
+class DartReportUpdater:
     TARGET_SHEETS = [
         'I. 회사의 개요', 'II. 사업의 내용', '1. 요약재무정보',
         '2. 연결재무제표', '3. 연결재무제표 주석', '4. 재무제표',
@@ -21,20 +20,28 @@ class SamsungSDSUpdater:
         'X. 대주주 등과의 거래내용', 'XI. 그 밖에 투자자 보호를 위하여 필요한 사항'
     ]
 
-    def __init__(self):
-        # 환경변수 확인을 위한 디버깅 코드
+    def __init__(self, corp_code, spreadsheet_var_name):
+        """
+        초기화
+        :param corp_code: 종목 코드 (예: '018260')
+        :param spreadsheet_var_name: 스프레드시트 환경변수 이름 (예: 'SDS_SPREADSHEET_ID')
+        """
+        self.corp_code = corp_code
+        self.spreadsheet_var_name = spreadsheet_var_name
+        
+        # 환경변수 확인
         print("환경변수 확인:")
         print("DART_API_KEY 존재:", 'DART_API_KEY' in os.environ)
         print("GOOGLE_CREDENTIALS 존재:", 'GOOGLE_CREDENTIALS' in os.environ)
-        print("SDS_SPREADSHEET_ID 존재:", 'SDS_SPREADSHEET_ID' in os.environ)
+        print(f"{spreadsheet_var_name} 존재:", spreadsheet_var_name in os.environ)
         
-        if 'SDS_SPREADSHEET_ID' not in os.environ:
-            raise ValueError("SDS_SPREADSHEET_ID 환경변수가 설정되지 않았습니다.")
+        if spreadsheet_var_name not in os.environ:
+            raise ValueError(f"{spreadsheet_var_name} 환경변수가 설정되지 않았습니다.")
             
         self.credentials = self.get_credentials()
         self.gc = gspread.authorize(self.credentials)
         self.dart = OpenDartReader(os.environ['DART_API_KEY'])
-        self.workbook = self.gc.open_by_key(os.environ['SDS_SPREADSHEET_ID'])
+        self.workbook = self.gc.open_by_key(os.environ[spreadsheet_var_name])
 
     def get_credentials(self):
         """Google Sheets 인증 설정"""
@@ -136,8 +143,15 @@ class SamsungSDSUpdater:
         archive.update_cell(5, last_col, today)
 
 def main():
-    print("삼성에스디에스(018260) 보고서 업데이트 시작")
-    updater = SamsungSDSUpdater()
+    # 종목 정보 설정
+    COMPANY_INFO = {
+        'code': '018260',
+        'name': '삼성에스디에스',
+        'spreadsheet_var': 'SDS_SPREADSHEET_ID'
+    }
+    
+    print(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
+    updater = DartReportUpdater(COMPANY_INFO['code'], COMPANY_INFO['spreadsheet_var'])
     updater.update_dart_reports()
     print("업데이트 완료")
 
