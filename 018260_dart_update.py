@@ -128,12 +128,20 @@ class DartReportUpdater:
                 print(f"최대 재시도 횟수 초과. 배치 {i//BATCH_SIZE + 1} 처리 실패")
                 raise Exception("API 할당량 문제로 인한 업데이트 실패")
 
+class DartReportUpdater:
+    TARGET_SHEETS = [
+        'I. 회사의 개요', 'II. 사업의 내용', '1. 요약재무정보',
+        '2. 연결재무제표', '3. 연결재무제표 주석', '4. 재무제표',
+        '5. 재무제표 주석', '6. 배당에 관한 사항', '8. 기타 재무에 관한 사항',
+        'VII. 주주에 관한 사항', 'VIII. 임원 및 직원 등에 관한 사항',
+        'X. 대주주 등과의 거래내용', 'XI. 그 밖에 투자자 보호를 위하여 필요한 사항'
+    ]
 
     def process_archive_data(self, archive, start_row, last_col):
         """Dart_Archive 데이터를 배치로 처리"""
         print(f"시작 행: {start_row}, 대상 열: {last_col}")
         all_rows = archive.get_all_values()
-        batch_updates = []
+        update_data = []  # 실제 업데이트할 데이터를 모아둘 리스트
         sheet_cache = {}
         
         # 처리할 행들을 그룹화
@@ -149,7 +157,7 @@ class DartReportUpdater:
             if sheet_name not in sheet_rows:
                 sheet_rows[sheet_name] = []
             sheet_rows[sheet_name].append({
-                'row_idx': row_idx,
+                'row_idx': row_idx + 1,  # 실제 시트의 행 번호로 변환
                 'keyword': all_rows[row_idx][1],
                 'n': all_rows[row_idx][2],
                 'x': all_rows[row_idx][3],
@@ -160,6 +168,7 @@ class DartReportUpdater:
             try:
                 print(f"시트 '{sheet_name}' 처리 중...")
                 
+                # 시트 데이터를 DataFrame으로 변환하여 캐시
                 if sheet_name not in sheet_cache:
                     search_sheet = self.workbook.worksheet(sheet_name)
                     sheet_data = search_sheet.get_all_values()
@@ -169,6 +178,7 @@ class DartReportUpdater:
                 
                 df = sheet_cache[sheet_name]
                 
+                # 각 키워드에 대한 값 찾기
                 for row in rows:
                     keyword = row['keyword']
                     if not keyword or not row['n'] or not row['x'] or not row['y']:
@@ -179,6 +189,7 @@ class DartReportUpdater:
                         x = int(row['x'])
                         y = int(row['y'])
                         
+                        # DataFrame에서 키워드 위치 찾기
                         keyword_positions = []
                         for idx, df_row in df.iterrows():
                             for col_idx, value in enumerate(df_row):
@@ -195,51 +206,45 @@ class DartReportUpdater:
                                 value = df.iat[target_row, target_col]
                                 cleaned_value = self.remove_parentheses(str(value))
                                 print(f"찾은 값: {cleaned_value} (키워드: {keyword})")
-                                batch_updates.append({
-                                    'range': f'R[{row["row_idx"] + 1}]C[{last_col}]',
-                                    'values': [[cleaned_value]]
-                                })
+                                update_data.append((row['row_idx'], cleaned_value))
                     
                     except Exception as e:
                         print(f"행 처리 중 오류: {str(e)}")
-                
-                # 배치 업데이트
-                if len(batch_updates) >= 100:
-                    try:
-                        values = [update['values'][0][0] for update in batch_updates]
-                        rows = [int(update['range'].split('R[')[1].split(']')[0]) for update in batch_updates]
-                        archive.update(f'R{min(rows)}C{last_col}:R{max(rows)}C{last_col}', [[v] for v in values])
-                        print(f"배치 업데이트 완료: {len(batch_updates)} 행")
-                        batch_updates = []
-                        time.sleep(1)
-                    except gspread.exceptions.APIError as e:
-                        if 'Quota exceeded' in str(e):
-                            print("할당량 제한 도달. 60초 대기...")
-                            time.sleep(60)
-                        else:
-                            raise e
-                            
+            
             except Exception as e:
                 print(f"시트 '{sheet_name}' 처리 중 오류 발생: {str(e)}")
         
-        # 남은 데이터 처리
-        if batch_updates:
+        # 모든 데이터를 수집한 후 한 번에 열 업데이트
+        if update_data:
             try:
-                values = [update['values'][0][0] for update in batch_updates]
-                rows = [int(update['range'].split('R[')[1].split(']')[0]) for update in batch_updates]
-                archive.update(f'R{min(rows)}C{last_col}:R{max(rows)}C{last_col}', [[v] for v in values])
-                print(f"최종 배치 업데이트 완료: {len(batch_updates)} 행")
+                # 데이터를 50개씩 나누어 업데이트
+                batch_size = 50
+                for i in range(0, len(update_data), batch_size):
+                    batch = update_data[i:i + batch_size]
+                    for row, value in batch:
+                        try:
+                            archive.update_cell(row, last_col, value)
+                            time.sleep(1)  # API 제한 고려
+                        except gspread.exceptions.APIError as e:
+                            if 'Quota exceeded' in str(e):
+                                print(f"할당량 제한 도달. 60초 대기 후 재시도... (행: {row})")
+                                time.sleep(60)
+                                archive.update_cell(row, last_col, value)
+                            else:
+                                raise e
+                    print(f"배치 업데이트 완료: {i+1}~{min(i+batch_size, len(update_data))} 행")
                 
+                # 작업 완료 후 상태 업데이트
                 today = datetime.now().strftime('%Y-%m-%d')
-                archive.update('R1C10', today)  # J1 셀
-                archive.update(f'R1C{last_col}', '1')  # 컨트롤 값
-                archive.update(f'R5C{last_col}', today)  # 날짜 업데이트
-            except gspread.exceptions.APIError as e:
-                if 'Quota exceeded' in str(e):
-                    time.sleep(60)
-                    archive.update(f'R{min(rows)}C{last_col}:R{max(rows)}C{last_col}', [[v] for v in values])
-                else:
-                    raise e
+                archive.update_cell(1, 10, today)  # J1 셀
+                archive.update_cell(1, last_col, '1')  # 컨트롤 값
+                archive.update_cell(5, last_col, today)  # 날짜 업데이트
+                
+                print("전체 업데이트 완료")
+                
+            except Exception as e:
+                print(f"최종 업데이트 중 오류 발생: {str(e)}")
+                raise e
                     
     def remove_parentheses(self, value):
         """괄호 내용 및 % 기호 제거"""
