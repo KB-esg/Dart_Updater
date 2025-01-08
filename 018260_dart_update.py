@@ -86,11 +86,27 @@ class SamsungSDSUpdater:
         tables = soup.find_all("table")
         
         worksheet.clear()
+        all_data = []
         
         for table in tables:
             table_data = parser.make2d(table)
             if table_data:
-                worksheet.append_rows(table_data)
+                all_data.extend(table_data)
+        
+        # 데이터를 배치로 나누어 업데이트
+        BATCH_SIZE = 100  # 한 번에 처리할 행 수
+        for i in range(0, len(all_data), BATCH_SIZE):
+            batch = all_data[i:i + BATCH_SIZE]
+            try:
+                worksheet.append_rows(batch)
+                time.sleep(1.1)  # API 호출 사이에 지연 추가
+            except gspread.exceptions.APIError as e:
+                if 'Quota exceeded' in str(e):
+                    print(f"할당량 제한 도달. 60초 대기 후 재시도...")
+                    time.sleep(60)
+                    worksheet.append_rows(batch)
+                else:
+                    raise e
 
     def process_dart_archive(self):
         """Dart_Archive 시트 처리"""
