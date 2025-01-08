@@ -136,14 +136,114 @@ class DartReportUpdater:
         'X. 대주주 등과의 거래내용', 'XI. 그 밖에 투자자 보호를 위하여 필요한 사항'
     ]
 
+
+    def __init__(self, corp_code, spreadsheet_var_name):
+        self.corp_code = corp_code
+        self.spreadsheet_var_name = spreadsheet_var_name
+        
+        print("환경변수 확인:")
+        print("DART_API_KEY 존재:", 'DART_API_KEY' in os.environ)
+        print("GOOGLE_CREDENTIALS 존재:", 'GOOGLE_CREDENTIALS' in os.environ)
+        print(f"{spreadsheet_var_name} 존재:", spreadsheet_var_name in os.environ)
+        
+        if spreadsheet_var_name not in os.environ:
+            raise ValueError(f"{spreadsheet_var_name} 환경변수가 설정되지 않았습니다.")
+            
+        self.credentials = self.get_credentials()
+        self.gc = gspread.authorize(self.credentials)
+        self.dart = OpenDartReader(os.environ['DART_API_KEY'])
+        self.workbook = self.gc.open_by_key(os.environ[spreadsheet_var_name])
+
+    def get_credentials(self):
+        creds_json = json.loads(os.environ['GOOGLE_CREDENTIALS'])
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+        return Credentials.from_service_account_info(creds_json, scopes=scopes)
+
+    def get_recent_dates(self):
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=90)
+        return start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
+
+    def update_dart_reports(self):
+        start_date, end_date = self.get_recent_dates()
+        report_list = self.dart.list(self.corp_code, start_date, end_date, kind='A', final='T')
+        
+        if not report_list.empty:
+            for _, report in report_list.iterrows():
+                self.process_report(report['rcept_no'])
+                print(f"보고서 처리 완료: {report['report_nm']}")
+
+    def process_report(self, rcept_no):
+        report_index = self.dart.sub_docs(rcept_no)
+        target_docs = report_index[report_index['title'].isin(self.TARGET_SHEETS)]
+        
+        for _, doc in target_docs.iterrows():
+            self.update_worksheet(doc['title'], doc['url'])
+
+    def update_worksheet(self, sheet_name, url):
+        try:
+            worksheet = self.workbook.worksheet(sheet_name)
+        except gspread.exceptions.WorksheetNotFound:
+            worksheet = self.workbook.add_worksheet(sheet_name, 1000, 10)
+            
+        response = requests.get(url)
+        if response.status_code == 200:
+            self.process_html_content(worksheet, response.text)
+            print(f"시트 업데이트 완료: {sheet_name}")
+
+    def process_html_content(self, worksheet, html_content):
+        soup = BeautifulSoup(html_content, 'html.parser')
+        tables = soup.find_all("table")
+        
+        worksheet.clear()
+        all_data = []
+        
+        for table in tables:
+            table_data = parser.make2d(table)
+            if table_data:
+                all_data.extend(table_data)
+                
+        BATCH_SIZE = 50
+        MAX_RETRIES = 5
+        
+        for i in range(0, len(all_data), BATCH_SIZE):
+            batch = all_data[i:i + BATCH_SIZE]
+            retry_count = 0
+            success = False
+            
+            while not success and retry_count < MAX_RETRIES:
+                try:
+                    worksheet.append_rows(batch)
+                    time.sleep(3)
+                    success = True
+                    print(f"배치 업데이트 성공: {i+1}~{min(i+BATCH_SIZE, len(all_data))} 행")
+                except gspread.exceptions.APIError as e:
+                    if 'Quota exceeded' in str(e):
+                        retry_count += 1
+                        wait_time = 60 * (retry_count + 1)
+                        print(f"할당량 제한 도달. {wait_time}초 대기 후 {retry_count}번째 재시도...")
+                        time.sleep(wait_time)
+                    else:
+                        raise e
+            
+            if not success:
+                print(f"최대 재시도 횟수 초과. 배치 {i//BATCH_SIZE + 1} 처리 실패")
+                raise Exception("API 할당량 문제로 인한 업데이트 실패")
+
+    def remove_parentheses(self, value):
+        if not value:
+            return value
+        return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
+
     def process_archive_data(self, archive, start_row, last_col):
-        """Dart_Archive 데이터를 배치로 처리"""
         print(f"시작 행: {start_row}, 대상 열: {last_col}")
         all_rows = archive.get_all_values()
-        update_data = []  # 실제 업데이트할 데이터를 모아둘 리스트
+        update_data = []
         sheet_cache = {}
         
-        # 처리할 행들을 그룹화
         sheet_rows = {}
         for row_idx in range(start_row - 1, len(all_rows)):
             if len(all_rows[row_idx]) < 5:
@@ -156,7 +256,7 @@ class DartReportUpdater:
             if sheet_name not in sheet_rows:
                 sheet_rows[sheet_name] = []
             sheet_rows[sheet_name].append({
-                'row_idx': row_idx + 1,  # 실제 시트의 행 번호로 변환
+                'row_idx': row_idx + 1,
                 'keyword': all_rows[row_idx][1],
                 'n': all_rows[row_idx][2],
                 'x': all_rows[row_idx][3],
@@ -167,7 +267,6 @@ class DartReportUpdater:
             try:
                 print(f"시트 '{sheet_name}' 처리 중...")
                 
-                # 시트 데이터를 DataFrame으로 변환하여 캐시
                 if sheet_name not in sheet_cache:
                     search_sheet = self.workbook.worksheet(sheet_name)
                     sheet_data = search_sheet.get_all_values()
@@ -177,7 +276,6 @@ class DartReportUpdater:
                 
                 df = sheet_cache[sheet_name]
                 
-                # 각 키워드에 대한 값 찾기
                 for row in rows:
                     keyword = row['keyword']
                     if not keyword or not row['n'] or not row['x'] or not row['y']:
@@ -188,7 +286,6 @@ class DartReportUpdater:
                         x = int(row['x'])
                         y = int(row['y'])
                         
-                        # DataFrame에서 키워드 위치 찾기
                         keyword_positions = []
                         for idx, df_row in df.iterrows():
                             for col_idx, value in enumerate(df_row):
@@ -213,17 +310,15 @@ class DartReportUpdater:
             except Exception as e:
                 print(f"시트 '{sheet_name}' 처리 중 오류 발생: {str(e)}")
         
-        # 모든 데이터를 수집한 후 한 번에 열 업데이트
         if update_data:
             try:
-                # 데이터를 50개씩 나누어 업데이트
                 batch_size = 50
                 for i in range(0, len(update_data), batch_size):
                     batch = update_data[i:i + batch_size]
                     for row, value in batch:
                         try:
                             archive.update_cell(row, last_col, value)
-                            time.sleep(1)  # API 제한 고려
+                            time.sleep(1)
                         except gspread.exceptions.APIError as e:
                             if 'Quota exceeded' in str(e):
                                 print(f"할당량 제한 도달. 60초 대기 후 재시도... (행: {row})")
@@ -233,24 +328,16 @@ class DartReportUpdater:
                                 raise e
                     print(f"배치 업데이트 완료: {i+1}~{min(i+batch_size, len(update_data))} 행")
                 
-                # 작업 완료 후 상태 업데이트
                 today = datetime.now().strftime('%Y-%m-%d')
-                archive.update_cell(1, 10, today)  # J1 셀
-                archive.update_cell(1, last_col, '1')  # 컨트롤 값
-                archive.update_cell(5, last_col, today)  # 날짜 업데이트
+                archive.update_cell(1, 10, today)
+                archive.update_cell(1, last_col, '1')
+                archive.update_cell(5, last_col, today)
                 
                 print("전체 업데이트 완료")
                 
             except Exception as e:
                 print(f"최종 업데이트 중 오류 발생: {str(e)}")
                 raise e
-                    
-    def remove_parentheses(self, value):
-        """괄호 내용 및 % 기호 제거"""
-        if not value:
-            return value
-        return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
-
 def main():
    try:
        import sys
