@@ -145,7 +145,7 @@ class DartReportUpdater:
         # 행 범위 유효성 검사
         if start_row >= len(all_rows):
             print(f"Warning: 시작 행({start_row})이 전체 행 수({len(all_rows)})보다 큽니다.")
-            start_row = 10  # 시작 행을 10으로 설정
+            start_row = 10
             print(f"시작 행을 {start_row}로 재설정합니다.")
         
         sheet_rows = {}
@@ -232,10 +232,19 @@ class DartReportUpdater:
                                 raise e
                     print(f"배치 업데이트 완료: {i+1}~{min(i+batch_size, len(update_data))} 행")
                 
-                today = datetime.now().strftime('%Y-%m-%d')
-                archive.update_cell(1, 10, today)
+                # 현재 날짜로 분기 정보 계산
+                today = datetime.now()
+                year = str(today.year)[2:]  # 년도의 마지막 2자리
+                quarter = (today.month - 1) // 3 + 1  # 분기 계산
+                quarter_text = f"{quarter}Q{year}"
+                
+                # 분기 정보 업데이트 (6번째 행)
+                archive.update_cell(6, last_col, quarter_text)
+                
+                # 기존 날짜 업데이트
+                archive.update_cell(1, 10, today.strftime('%Y-%m-%d'))
                 archive.update_cell(1, last_col, '1')
-                archive.update_cell(5, last_col, today)
+                archive.update_cell(5, last_col, today.strftime('%Y-%m-%d'))
                 
                 print("전체 업데이트 완료")
                 
