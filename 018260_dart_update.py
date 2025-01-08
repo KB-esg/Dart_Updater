@@ -28,7 +28,6 @@ class DartReportUpdater:
         self.corp_code = corp_code
         self.spreadsheet_var_name = spreadsheet_var_name
         
-        # 환경변수 확인
         print("환경변수 확인:")
         print("DART_API_KEY 존재:", 'DART_API_KEY' in os.environ)
         print("GOOGLE_CREDENTIALS 존재:", 'GOOGLE_CREDENTIALS' in os.environ)
