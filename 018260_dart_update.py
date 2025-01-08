@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 from html_table_parser import parser_functions as parser
 import pandas as pd
 import re
+import time
 
 class SamsungSDSUpdater:
     CORP_CODE = '018260'  # 삼성에스디에스 종목코드
