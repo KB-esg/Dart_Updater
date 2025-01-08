@@ -93,20 +93,33 @@ class SamsungSDSUpdater:
             if table_data:
                 all_data.extend(table_data)
         
-        # 데이터를 배치로 나누어 업데이트
-        BATCH_SIZE = 100  # 한 번에 처리할 행 수
+        # 더 작은 배치 크기와 더 긴 지연 시간 설정
+        BATCH_SIZE = 50  # 배치 크기 축소
+        MAX_RETRIES = 5  # 최대 재시도 횟수
+        
         for i in range(0, len(all_data), BATCH_SIZE):
             batch = all_data[i:i + BATCH_SIZE]
-            try:
-                worksheet.append_rows(batch)
-                time.sleep(1.1)  # API 호출 사이에 지연 추가
-            except gspread.exceptions.APIError as e:
-                if 'Quota exceeded' in str(e):
-                    print(f"할당량 제한 도달. 60초 대기 후 재시도...")
-                    time.sleep(60)
+            retry_count = 0
+            success = False
+            
+            while not success and retry_count < MAX_RETRIES:
+                try:
                     worksheet.append_rows(batch)
-                else:
-                    raise e
+                    time.sleep(3)  # 배치 사이 지연 시간 증가
+                    success = True
+                    print(f"배치 업데이트 성공: {i+1}~{min(i+BATCH_SIZE, len(all_data))} 행")
+                except gspread.exceptions.APIError as e:
+                    if 'Quota exceeded' in str(e):
+                        retry_count += 1
+                        wait_time = 60 * (retry_count + 1)  # 재시도마다 대기 시간 증가
+                        print(f"할당량 제한 도달. {wait_time}초 대기 후 {retry_count}번째 재시도...")
+                        time.sleep(wait_time)
+                    else:
+                        raise e
+            
+            if not success:
+                print(f"최대 재시도 횟수 초과. 배치 {i//BATCH_SIZE + 1} 처리 실패")
+                raise Exception("API 할당량 문제로 인한 업데이트 실패")
 
     def process_dart_archive(self):
         """Dart_Archive 시트 처리"""
