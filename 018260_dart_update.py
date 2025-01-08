@@ -35,7 +35,7 @@ class SamsungSDSUpdater:
         self.gc = gspread.authorize(self.credentials)
         self.dart = OpenDartReader(os.environ['DART_API_KEY'])
         self.workbook = self.gc.open_by_key(os.environ['SDS_SPREADSHEET_ID'])
-        
+
     def get_credentials(self):
         """Google Sheets 인증 설정"""
         creds_json = json.loads(os.environ['GOOGLE_CREDENTIALS'])
@@ -122,60 +122,6 @@ class SamsungSDSUpdater:
                 print(f"최대 재시도 횟수 초과. 배치 {i//BATCH_SIZE + 1} 처리 실패")
                 raise Exception("API 할당량 문제로 인한 업데이트 실패")
 
-    def process_dart_archive(self):
-        """Dart_Archive 시트 처리"""
-        archive = self.workbook.worksheet('Dart_Archive')
-        last_col = len(archive.get_all_values()[0])
-        control_value = archive.cell(1, last_col).value
-        
-        # 시작 행 결정
-        if not control_value:
-            data = archive.col_values(last_col)
-            last_row_with_data = len(data) - next(i for i, x in enumerate(reversed(data)) if x) - 1
-            start_row = max(last_row_with_data + 1, 7)
-        else:
-            last_col += 1
-            start_row = 947
-
-        self.update_archive_data(archive, start_row, last_col)
-
-    def update_archive_data(self, archive, start_row, last_col):
-        """아카이브 데이터 업데이트"""
-        all_rows = archive.get_all_values()
-        for row in range(start_row, len(all_rows) + 1):
-            cell_values = archive.row_values(row)
-            if len(cell_values) < 5:
-                continue
-
-            sheet_name = cell_values[0]
-            keyword = cell_values[1]
-            keyword_n = cell_values[2]
-            keyword_x = cell_values[3]
-            keyword_y = cell_values[4]
-
-            if not all([keyword, keyword_n, keyword_x, keyword_y, sheet_name]):
-                continue
-
-            self.process_archive_row(archive, row, last_col, keyword, int(keyword_n), 
-                                  int(keyword_x), int(keyword_y), sheet_name)
-
-        # 작업 완료 후 상태 업데이트
-        self.update_archive_status(archive, last_col)
-
-    def process_archive_row(self, archive, row, col, keyword, n, x, y, sheet_name):
-        """아카이브 행 처리"""
-        try:
-            search_sheet = self.workbook.worksheet(sheet_name)
-            cell_list = search_sheet.findall(keyword)
-            
-            if cell_list and len(cell_list) >= n:
-                target_cell = cell_list[n - 1]
-                value = search_sheet.cell(target_cell.row + y, target_cell.col + x).value
-                cleaned_value = self.remove_parentheses(value)
-                archive.update_cell(row, col, cleaned_value)
-        except Exception as e:
-            print(f"행 {row} 처리 중 오류 발생: {str(e)}")
-
     def remove_parentheses(self, value):
         """괄호 내용 및 % 기호 제거"""
         if not value:
@@ -193,7 +139,6 @@ def main():
     print("삼성에스디에스(018260) 보고서 업데이트 시작")
     updater = SamsungSDSUpdater()
     updater.update_dart_reports()
-    updater.process_dart_archive()
     print("업데이트 완료")
 
 if __name__ == "__main__":
