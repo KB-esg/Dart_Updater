@@ -1,21 +1,22 @@
-name: DART Report Update
+name: Samsung SDS DART Update
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # Runs daily at midnight
-  workflow_dispatch:  # Allows manual trigger
+    - cron: '0 0 * * *'  # 매일 자정에 실행
+  workflow_dispatch:      # 수동 실행 가능
 
 jobs:
-  update-reports:
+  update-sds-reports:
     runs-on: ubuntu-latest
     
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-      SPREADSHEET_ID: ${{ secrets.SDS_SPREADSHEET_ID }}
+      SDS_SPREADSHEET_ID: ${{ secrets.SDS_SPREADSHEET_ID }}
 
     steps:
-      - uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@v2
 
       - name: Set up Python
         uses: actions/setup-python@v2
@@ -28,5 +29,12 @@ jobs:
           pip install gspread oauth2client google-auth google-auth-oauthlib google-auth-httplib2 
           pip install opendartreader pandas beautifulsoup4 html_table_parser tqdm
 
-      - name: Run 018260 DART update script
+      - name: Verify environment variables
+        run: |
+          echo "Checking environment variables..."
+          echo "DART_API_KEY exists: ${{ env.DART_API_KEY != '' }}"
+          echo "GOOGLE_CREDENTIALS exists: ${{ env.GOOGLE_CREDENTIALS != '' }}"
+          echo "SDS_SPREADSHEET_ID exists: ${{ env.SDS_SPREADSHEET_ID != '' }}"
+
+      - name: Run DART update script
         run: python 018260_dart_update.py
