@@ -61,7 +61,7 @@ class DartReportUpdater:
     def update_dart_reports(self):
         """DART 보고서 데이터 업데이트"""
         start_date, end_date = self.get_recent_dates()
-        report_list = self.dart.list(self.CORP_CODE, start_date, end_date, kind='A', final='T')
+        report_list = self.dart.list(self.corp_code, start_date, end_date, kind='A', final='T')
         
         if not report_list.empty:
             for _, report in report_list.iterrows():
