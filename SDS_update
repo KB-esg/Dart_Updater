@@ -1,0 +1,32 @@
+name: DART Report Update
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # Runs daily at midnight
+  workflow_dispatch:  # Allows manual trigger
+
+jobs:
+  update-reports:
+    runs-on: ubuntu-latest
+    
+    env:
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      SPREADSHEET_ID: ${{ secrets.018260_SPREADSHEET_ID }}
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install gspread oauth2client google-auth google-auth-oauthlib google-auth-httplib2 
+          pip install opendartreader pandas beautifulsoup4 html_table_parser tqdm
+
+      - name: Run DART update script
+        run: python dart_update.py
