@@ -220,25 +220,31 @@ def main():
             control_value = archive.cell(1, last_col).value
             log(f"Control value: {control_value}")
             
-            # 다음 열이 필요한 경우 시트 크기 조정
-            if control_value or (last_col >= current_cols - 1):
-                new_cols = current_cols + 10  # 한 번에 10개의 열을 추가
-                try:
-                    archive.resize(rows=archive.row_count, cols=new_cols)
-                    log(f"시트 크기를 {new_cols}열로 조정했습니다.")
-                    current_cols = new_cols
-                except Exception as e:
-                    log(f"시트 크기 조정 중 오류 발생: {str(e)}")
-                    raise
-            
             if not control_value:
                 data = archive.col_values(last_col)
+                
+                # 데이터 내용 확인을 위한 로깅 추가
+                log("마지막 열 데이터 분석:")
+                log(f"데이터 길이: {len(data)}")
+                log(f"비어있지 않은 값의 개수: {sum(1 for x in data if x.strip())}")
+                
+                # 처음 10개 값과 마지막 10개 값 출력
+                log("처음 10개 값:")
+                for i, val in enumerate(data[:10]):
+                    log(f"행 {i+1}: [{val}]")
+                    
+                log("마지막 10개 값:")
+                for i, val in enumerate(data[-10:]):
+                    log(f"행 {len(data)-10+i+1}: [{val}]")
+                
                 # 실제 데이터가 있는 행만 찾기
                 non_empty_rows = [i for i, x in enumerate(data) if x.strip()]
                 if non_empty_rows:
                     start_row = max(max(non_empty_rows) + 1, 10)
+                    log(f"찾은 마지막 데이터 행: {max(non_empty_rows)}")
                 else:
                     start_row = 10
+                    log("데이터가 없는 열입니다. 10행부터 시작합니다.")
             else:
                 last_col += 1
                 start_row = 10
