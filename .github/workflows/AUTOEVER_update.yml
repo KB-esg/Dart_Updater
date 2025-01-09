@@ -1,4 +1,4 @@
-name: Samsung SDS DART Update
+name: 02_AUTOEVER DART Update
 
 on:
   schedule:
