@@ -55,7 +55,7 @@ class DartReportUpdater:
        ]
        return Credentials.from_service_account_info(creds_json, scopes=scopes)
 
-   def get_recent_dates(self):
+    def get_recent_dates(self):
        """최근 3개월 날짜 범위 계산"""
        end_date = datetime.now()
        start_date = end_date - timedelta(days=90)
