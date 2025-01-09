@@ -230,7 +230,7 @@ def main():
                 except Exception as e:
                     log(f"시트 크기 조정 중 오류 발생: {str(e)}")
                     raise
-                    
+            
             if not control_value:
                 data = archive.col_values(last_col)
                 # 실제 데이터가 있는 행만 찾기
@@ -239,7 +239,9 @@ def main():
                     start_row = max(max(non_empty_rows) + 1, 10)
                 else:
                     start_row = 10
-
+            else:
+                last_col += 1
+                start_row = 10
             
             log(f"처리 시작 행: {start_row}, 대상 열: {last_col}")
             updater.process_archive_data(archive, start_row, last_col)
