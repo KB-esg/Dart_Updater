@@ -194,7 +194,7 @@ def main():
         
         COMPANY_INFO = {
             'code': '018260',
-            'name': '삼성에스디에스',
+            'name': '삼성SDS',
             'spreadsheet_var': 'SDS_SPREADSHEET_ID'
         }
         
@@ -233,10 +233,11 @@ def main():
             
             if not control_value:
                 data = archive.col_values(last_col)
-                try:
-                    last_row_with_data = len(data) - next(i for i, x in enumerate(reversed(data)) if x) - 1
-                    start_row = max(last_row_with_data + 1, 10)
-                except StopIteration:
+                # 실제 데이터가 있는 행만 찾기
+                non_empty_rows = [i for i, x in enumerate(data) if x.strip()]
+                if non_empty_rows:
+                    start_row = max(max(non_empty_rows) + 1, 10)
+                else:
                     start_row = 10
             else:
                 last_col += 1
