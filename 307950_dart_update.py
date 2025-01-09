@@ -185,86 +185,94 @@ class DartReportUpdater:
                 raise e
 
 def main():
-    try:
-        import sys
-        
-        def log(msg):
-            print(msg)
-            sys.stdout.flush()
-        
-        COMPANY_INFO = {
-            'code': '307950',
-            'name': '현대오토에버',
-            'spreadsheet_var': 'AUTOEVER_SPREADSHEET_ID'
-        }
-        
-        log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
-        updater = DartReportUpdater(COMPANY_INFO['code'], COMPANY_INFO['spreadsheet_var'])
-        
-        updater.update_dart_reports()
-        log("보고서 시트 업데이트 완료")
-        
-        log("Dart_Archive 시트 업데이트 시작")
-        try:
-            archive = updater.workbook.worksheet('Dart_Archive')
-            log("Archive 시트 접근 성공")
-            
-            sheet_values = archive.get_all_values()
-            if not sheet_values:
-                raise ValueError("Dart_Archive 시트가 비어있습니다")
-            
-            last_col = len(sheet_values[0])
-            current_cols = archive.col_count  # 현재 열 수 확인
-            log(f"현재 마지막 열: {last_col}, 전체 행 수: {len(sheet_values)}, 시트 열 수: {current_cols}")
-            
-            control_value = archive.cell(1, last_col).value
-            log(f"Control value: {control_value}")
-            
-            if not control_value:
-                data = archive.col_values(last_col)
-                
-                # 데이터 내용 확인을 위한 로깅 추가
-                log("마지막 열 데이터 분석:")
-                log(f"데이터 길이: {len(data)}")
-                log(f"비어있지 않은 값의 개수: {sum(1 for x in data if x.strip())}")
-                
-                # 처음 10개 값과 마지막 10개 값 출력
-                log("처음 10개 값:")
-                for i, val in enumerate(data[:10]):
-                    log(f"행 {i+1}: [{val}]")
-                    
-                log("마지막 10개 값:")
-                for i, val in enumerate(data[-10:]):
-                    log(f"행 {len(data)-10+i+1}: [{val}]")
-                
-                # 실제 데이터가 있는 행만 찾기
-                non_empty_rows = [i for i, x in enumerate(data) if x.strip()]
-                if non_empty_rows:
-                    start_row = max(max(non_empty_rows) + 1, 10)
-                    log(f"찾은 마지막 데이터 행: {max(non_empty_rows)}")
-                else:
-                    start_row = 10
-                    log("데이터가 없는 열입니다. 10행부터 시작합니다.")
-            else:
-                last_col += 1
-                start_row = 10
-            
-            log(f"처리 시작 행: {start_row}, 대상 열: {last_col}")
-            updater.process_archive_data(archive, start_row, last_col)
-            log("Dart_Archive 시트 업데이트 완료")
-            
-        except Exception as e:
-            log(f"Dart_Archive 시트 처리 중 오류 발생: {str(e)}")
-            import traceback
-            log(traceback.format_exc())
-            raise
+   try:
+       import sys
+       
+       def log(msg):
+           print(msg)
+           sys.stdout.flush()
+       
+       COMPANY_INFO = {
+           'code': '307950',
+           'name': '현대오토에버',
+           'spreadsheet_var': 'AUTOEVER_SPREADSHEET_ID'
+       }
+       
+       log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
+       updater = DartReportUpdater(COMPANY_INFO['code'], COMPANY_INFO['spreadsheet_var'])
+       
+       updater.update_dart_reports()
+       log("보고서 시트 업데이트 완료")
+       
+       log("Dart_Archive 시트 업데이트 시작")
+       try:
+           archive = updater.workbook.worksheet('Dart_Archive')
+           log("Archive 시트 접근 성공")
+           
+           sheet_values = archive.get_all_values()
+           if not sheet_values:
+               raise ValueError("Dart_Archive 시트가 비어있습니다")
+           
+           last_col = len(sheet_values[0])
+           current_cols = archive.col_count  # 현재 열 수 확인
+           log(f"현재 마지막 열: {last_col}, 전체 행 수: {len(sheet_values)}, 시트 열 수: {current_cols}")
+           
+           control_value = archive.cell(1, last_col).value
+           log(f"Control value: {control_value}")
+           
+           # 다음 열이 필요한 경우 시트 크기 조정
+           if control_value or (last_col >= current_cols - 1):
+               new_cols = current_cols + 10  # 한 번에 10개의 열을 추가
+               try:
+                   archive.resize(rows=archive.row_count, cols=new_cols)
+                   log(f"시트 크기를 {new_cols}열로 조정했습니다.")
+                   current_cols = new_cols
+               except Exception as e:
+                   log(f"시트 크기 조정 중 오류 발생: {str(e)}")
+                   raise
+           
+           if not control_value:
+               # 2열의 유효 데이터 범위 확인
+               search_terms_col = archive.col_values(2)
+               valid_rows = [i for i, x in enumerate(search_terms_col) if x.strip() and x.strip() != '-' and x.strip() != '[-]']
+               valid_data_end = max(valid_rows) if valid_rows else 10
+               
+               # 현재 열 데이터 확인
+               current_col_data = archive.col_values(last_col)
+               
+               # 현재 열의 유효 데이터 범위까지 데이터가 채워져 있는지 확인
+               current_col_filled = all(x.strip() for x in current_col_data[10:valid_data_end+1])
+               
+               if current_col_filled:
+                   # 현재 열이 모두 채워져 있으면 다음 열로 이동
+                   last_col += 1
+                   start_row = 10
+                   log("현재 열 작업 완료, 다음 열 10행부터 시작")
+               else:
+                   # 현재 열에서 이어서 작업
+                   current_col_valid = [i for i, x in enumerate(current_col_data) if x.strip() and x.strip() != '-' and x.strip() != '[-]']
+                   start_row = max(max(current_col_valid) + 1, 10) if current_col_valid else 10
+                   log("현재 열에서 이어서 작업")
+           else:
+               last_col += 1
+               start_row = 10
+           
+           log(f"처리 시작 행: {start_row}, 대상 열: {last_col}")
+           updater.process_archive_data(archive, start_row, last_col)
+           log("Dart_Archive 시트 업데이트 완료")
+           
+       except Exception as e:
+           log(f"Dart_Archive 시트 처리 중 오류 발생: {str(e)}")
+           import traceback
+           log(traceback.format_exc())
+           raise
 
-    except Exception as e:
-        log(f"전체 작업 중 오류 발생: {str(e)}")
-        log(f"오류 상세 정보: {type(e).__name__}")
-        import traceback
-        log(traceback.format_exc())
-        raise
+   except Exception as e:
+       log(f"전체 작업 중 오류 발생: {str(e)}")
+       log(f"오류 상세 정보: {type(e).__name__}")
+       import traceback
+       log(traceback.format_exc())
+       raise
 
 if __name__ == "__main__":
-    main()
+   main()
