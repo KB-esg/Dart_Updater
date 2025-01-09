@@ -1,4 +1,4 @@
-name: Samsung SDS DART Update
+name: 01_Samsung SDS DART Update
 
 on:
   schedule:
