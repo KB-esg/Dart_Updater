@@ -13,7 +13,7 @@ jobs:
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-      AUTOEVER_SPREADSHEET_ID: ${{ secrets.LGCNS_SPREADSHEET_ID }}
+      LGCNS_SPREADSHEET_ID: ${{ secrets.LGCNS_SPREADSHEET_ID }}
 
     steps:
       - name: Checkout repository
