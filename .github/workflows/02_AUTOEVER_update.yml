@@ -7,7 +7,7 @@ on:
   workflow_dispatch:      # 수동 실행 가능
 
 jobs:
-  update-sds-reports:
+  update-autoever-reports:
     runs-on: ubuntu-latest
     
     env:
