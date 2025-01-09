@@ -185,19 +185,18 @@ class DartReportUpdater:
                 raise e
 
 def main():
-    try:
-        import sys
-        
-        def log(msg):
-            print(msg)
-            sys.stdout.flush()
-        
-        COMPANY_INFO = {
-            'code': '064400',
-            'name': '엘지씨엔에스',
-            'spreadsheet_var': 'LGCNS_SPREADSHEET_ID'
-        }
-        
+   try:
+       import sys
+       
+       def log(msg):
+           print(msg)
+           sys.stdout.flush()
+       
+       COMPANY_INFO = {
+           'code': '064400',
+           'name': '엘지씨엔에스',
+           'spreadsheet_var': 'LGCNS_SPREADSHEET_ID'
+       }
        
        log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
        updater = DartReportUpdater(COMPANY_INFO['code'], COMPANY_INFO['spreadsheet_var'])
