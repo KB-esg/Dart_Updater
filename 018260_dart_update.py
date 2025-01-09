@@ -61,7 +61,7 @@ class DartReportUpdater:
        start_date = end_date - timedelta(days=90)
        return start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
 
-   def update_dart_reports(self):
+    def update_dart_reports(self):
        """DART 보고서 데이터 업데이트"""
        start_date, end_date = self.get_recent_dates()
        
@@ -92,7 +92,7 @@ class DartReportUpdater:
                self.process_report(report['rcept_no'])
                print(f"보고서 처리 완료: {report['report_nm']}")
 
-   def process_report(self, rcept_no):
+    def process_report(self, rcept_no):
        """개별 보고서 처리"""
        report_index = self.dart.sub_docs(rcept_no)
        target_docs = report_index[report_index['title'].isin(self.TARGET_SHEETS)]
@@ -100,7 +100,7 @@ class DartReportUpdater:
        for _, doc in target_docs.iterrows():
            self.update_worksheet(doc['title'], doc['url'])
 
-   def update_worksheet(self, sheet_name, url):
+    def update_worksheet(self, sheet_name, url):
        """워크시트 업데이트"""
        try:
            worksheet = self.workbook.worksheet(sheet_name)
@@ -112,7 +112,7 @@ class DartReportUpdater:
            self.process_html_content(worksheet, response.text)
            print(f"시트 업데이트 완료: {sheet_name}")
 
-def get_credentials(self):
+    def get_credentials(self):
        """Google Sheets 인증 설정"""
        creds_json = json.loads(os.environ['GOOGLE_CREDENTIALS'])
        scopes = [
@@ -121,13 +121,13 @@ def get_credentials(self):
        ]
        return Credentials.from_service_account_info(creds_json, scopes=scopes)
 
-   def get_recent_dates(self):
+    def get_recent_dates(self):
        """최근 3개월 날짜 범위 계산"""
        end_date = datetime.now()
        start_date = end_date - timedelta(days=90)
        return start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
 
-   def update_dart_reports(self):
+    def update_dart_reports(self):
        """DART 보고서 데이터 업데이트"""
        start_date, end_date = self.get_recent_dates()
        
@@ -158,7 +158,7 @@ def get_credentials(self):
                self.process_report(report['rcept_no'])
                print(f"보고서 처리 완료: {report['report_nm']}")
 
-   def process_report(self, rcept_no):
+    def process_report(self, rcept_no):
        """개별 보고서 처리"""
        report_index = self.dart.sub_docs(rcept_no)
        target_docs = report_index[report_index['title'].isin(self.TARGET_SHEETS)]
@@ -166,7 +166,7 @@ def get_credentials(self):
        for _, doc in target_docs.iterrows():
            self.update_worksheet(doc['title'], doc['url'])
 
-   def update_worksheet(self, sheet_name, url):
+    def update_worksheet(self, sheet_name, url):
        """워크시트 업데이트"""
        try:
            worksheet = self.workbook.worksheet(sheet_name)
@@ -178,7 +178,7 @@ def get_credentials(self):
            self.process_html_content(worksheet, response.text)
            print(f"시트 업데이트 완료: {sheet_name}")
 
-   def process_html_content(self, worksheet, html_content):
+    def process_html_content(self, worksheet, html_content):
        """HTML 내용 처리 및 워크시트 업데이트"""
        soup = BeautifulSoup(html_content, 'html.parser')
        tables = soup.find_all("table")
@@ -218,13 +218,13 @@ def get_credentials(self):
                print(f"최대 재시도 횟수 초과. 배치 {i//BATCH_SIZE + 1} 처리 실패")
                raise Exception("API 할당량 문제로 인한 업데이트 실패")
 
-   def remove_parentheses(self, value):
+    def remove_parentheses(self, value):
        """괄호 내용 제거"""
        if not value:
            return value
        return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
 
-   def process_archive_data(self, archive, start_row, last_col):
+    def process_archive_data(self, archive, start_row, last_col):
        """아카이브 데이터 처리"""
        print(f"시작 행: {start_row}, 대상 열: {last_col}")
        all_rows = archive.get_all_values()
