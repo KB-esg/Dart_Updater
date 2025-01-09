@@ -193,9 +193,9 @@ def main():
            sys.stdout.flush()
        
        COMPANY_INFO = {
-           'code': '307950',
-           'name': '현대오토에버',
-           'spreadsheet_var': 'AUTOEVER_SPREADSHEET_ID'
+           'code': '018260',
+           'name': '삼성에스디에스',
+           'spreadsheet_var': 'SDS_SPREADSHEET_ID'
        }
        
        log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
