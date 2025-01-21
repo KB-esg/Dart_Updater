@@ -1,4 +1,4 @@
-name: 03_LG CNS_DART Update
+name: 02_현대오토에버_DART Update
 
 on:
   schedule:
@@ -14,7 +14,7 @@ jobs:
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-      LGCNS_SPREADSHEET_ID: ${{ secrets.LGCNS_SPREADSHEET_ID }}
+      AUTOEVER_SPREADSHEET_ID: ${{ secrets.AUTOEVER_SPREADSHEET_ID }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
 
@@ -36,7 +36,7 @@ jobs:
       - name: Verify environment variables
         run: |
           echo "Checking environment variables..."
-          for var in "DART_API_KEY" "GOOGLE_CREDENTIALS" "LGHELLO_SPREADSHEET_ID" "TELEGRAM_BOT_TOKEN" "TELEGRAM_CHANNEL_ID"; do
+          for var in "DART_API_KEY" "GOOGLE_CREDENTIALS" "AUTOEVER_SPREADSHEET_ID" "TELEGRAM_BOT_TOKEN" "TELEGRAM_CHANNEL_ID"; do
             if [ -z "${!var}" ]; then
               echo "Error: $var is not set"
               exit 1
