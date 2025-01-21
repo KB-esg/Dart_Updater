@@ -48,7 +48,7 @@ class DartReportUpdater:
         self.dart = OpenDartReader(os.environ['DART_API_KEY'])
         self.workbook = self.gc.open_by_key(os.environ[spreadsheet_var_name])
         self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
-        self.telegram_channel_id = os.environ.get('TELEGRAM_CHANNEL_ID')    try:
+        self.telegram_channel_id = os.environ.get('TELEGRAM_CHANNEL_ID')
         COMPANY_INFO = {
             'code': '037560',
             'name': 'LG헬로비전',
