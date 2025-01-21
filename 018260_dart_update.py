@@ -342,8 +342,8 @@ def main():
             sys.stdout.flush()  # 즉시 출력 보장
         
         COMPANY_INFO = {
-            'code': '037560',
-            'name': 'LG헬로비전',
+            'code': '018260',
+            'name': '삼성에스디에스',
             'spreadsheet_var': 'LGHELLO_SPREADSHEET_ID'
         }
         
