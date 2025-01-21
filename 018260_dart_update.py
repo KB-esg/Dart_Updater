@@ -344,7 +344,7 @@ def main():
         COMPANY_INFO = {
             'code': '018260',
             'name': '삼성에스디에스',
-            'spreadsheet_var': 'LGHELLO_SPREADSHEET_ID'
+            'spreadsheet_var': 'SDS_SPREADSHEET_ID'
         }
         
         log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
