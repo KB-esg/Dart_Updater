@@ -260,9 +260,9 @@ def main():
             sys.stdout.flush()
         
         COMPANY_INFO = {
-            'code': '064400',
-            'name': '엘지씨엔에스',
-            'spreadsheet_var': 'LGCNS_SPREADSHEET_ID'
+            'code': '037560',
+            'name': 'LG헬로비전',
+            'spreadsheet_var': 'LGHELLO_SPREADSHEET_ID'
         }
         
         log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
