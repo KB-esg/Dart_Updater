@@ -342,7 +342,7 @@ def main():
             sys.stdout.flush()  # 즉시 출력 보장
         
         COMPANY_INFO = {
-            'code': '0644000',
+            'code': '00139834',
             'name': '엘지씨엔에스',
             'spreadsheet_var': 'LGCNS_SPREADSHEET_ID'
         }
