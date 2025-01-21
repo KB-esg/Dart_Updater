@@ -166,7 +166,7 @@ class DartReportUpdater:
             return value
         return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
 
-class DartReportUpdater:
+
     def process_archive_data(self, archive, start_row, last_col):
         """아카이브 데이터 처리"""
         try:
