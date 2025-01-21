@@ -173,17 +173,18 @@ class DartReportUpdater:
             all_rows = archive.get_all_values()
             update_data = []
             sheet_cache = {}
-
+            
             # 현재 시트의 크기 확인
             current_cols = archive.col_count
             print(f"현재 시트 열 수: {current_cols}")
             
-            # 필요한 경우 시트 크기 조정
+            # 필요한 경우 시트 크기 조정 (이 부분을 먼저 실행)
             if last_col >= current_cols:
                 new_cols = max(last_col + 5, current_cols + 10)  # 여유 있게 열 추가
                 try:
                     print(f"시트 크기를 {current_cols}에서 {new_cols}로 조정합니다.")
                     archive.resize(rows=archive.row_count, cols=new_cols)
+                    time.sleep(2)  # 크기 조정 후 잠시 대기
                     print("시트 크기 조정 완료")
                 except Exception as e:
                     print(f"시트 크기 조정 중 오류 발생: {str(e)}")
