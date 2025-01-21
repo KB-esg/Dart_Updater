@@ -36,7 +36,7 @@ jobs:
       - name: Verify environment variables
         run: |
           echo "Checking environment variables..."
-          for var in "DART_API_KEY" "GOOGLE_CREDENTIALS" "LGHELLO_SPREADSHEET_ID" "TELEGRAM_BOT_TOKEN" "TELEGRAM_CHANNEL_ID"; do
+          for var in "DART_API_KEY" "GOOGLE_CREDENTIALS" "SDS_SPREADSHEET_ID" "TELEGRAM_BOT_TOKEN" "TELEGRAM_CHANNEL_ID"; do
             if [ -z "${!var}" ]; then
               echo "Error: $var is not set"
               exit 1
