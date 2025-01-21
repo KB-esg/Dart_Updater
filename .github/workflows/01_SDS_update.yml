@@ -14,7 +14,7 @@ jobs:
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-      LGCNS_SPREADSHEET_ID: ${{ secrets.LGCNS_SPREADSHEET_ID }}
+      SDS_SPREADSHEET_ID: ${{ secrets.SDS_SPREADSHEET_ID }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
 
