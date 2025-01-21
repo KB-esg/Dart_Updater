@@ -31,11 +31,15 @@ class DartReportUpdater:
        self.corp_code = corp_code
        self.corp_name = corp_name
        self.spreadsheet_var_name = spreadsheet_var_name
+       self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+       self.telegram_channel_id = os.environ.get('TELEGRAM_CHANNEL_ID')
        
        print("환경변수 확인:")
        print("DART_API_KEY 존재:", 'DART_API_KEY' in os.environ)
        print("GOOGLE_CREDENTIALS 존재:", 'GOOGLE_CREDENTIALS' in os.environ)
        print(f"{spreadsheet_var_name} 존재:", spreadsheet_var_name in os.environ)
+       print("TELEGRAM_BOT_TOKEN 존재:", 'TELEGRAM_BOT_TOKEN' in os.environ)
+       print("TELEGRAM_CHANNEL_ID 존재:", 'TELEGRAM_CHANNEL_ID' in os.environ)
        
        if spreadsheet_var_name not in os.environ:
            raise ValueError(f"{spreadsheet_var_name} 환경변수가 설정되지 않았습니다.")
@@ -157,145 +161,187 @@ class DartReportUpdater:
            return value
        return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
 
+class DartReportUpdater:
     def process_archive_data(self, archive, start_row, last_col):
         """아카이브 데이터 처리"""
-        print(f"시작 행: {start_row}, 대상 열: {last_col}")
-        all_rows = archive.get_all_values()
-        update_data = []
-        sheet_cache = {}
-        
-        sheet_rows = {}
-        for row_idx in range(start_row - 1, len(all_rows)):
-            if len(all_rows[row_idx]) < 5:
-                continue
-                
-            sheet_name = all_rows[row_idx][0]
-            if not sheet_name:
-                continue
-                
-            if sheet_name not in sheet_rows:
-                sheet_rows[sheet_name] = []
-            sheet_rows[sheet_name].append({
-                'row_idx': row_idx + 1,
-                'keyword': all_rows[row_idx][1],
-                'n': all_rows[row_idx][2],
-                'x': all_rows[row_idx][3],
-                'y': all_rows[row_idx][4]
-            })
-        
-        for sheet_name, rows in sheet_rows.items():
-            try:
-                print(f"시트 '{sheet_name}' 처리 중...")
-                
-                if sheet_name not in sheet_cache:
-                    search_sheet = self.workbook.worksheet(sheet_name)
-                    sheet_data = search_sheet.get_all_values()
-                    df = pd.DataFrame(sheet_data)
-                    sheet_cache[sheet_name] = df
-                    print(f"시트 '{sheet_name}' 데이터 로드 완료 (크기: {df.shape})")
-                
-                df = sheet_cache[sheet_name]
-                
-                for row in rows:
-                    keyword = row['keyword']
-                    if not keyword or not row['n'] or not row['x'] or not row['y']:
-                        continue
-                    
-                    try:
-                        n = int(row['n'])
-                        x = int(row['x'])
-                        y = int(row['y'])
-                        
-                        keyword_positions = []
-                        for idx, df_row in df.iterrows():
-                            for col_idx, value in enumerate(df_row):
-                                if value == keyword:
-                                    keyword_positions.append((idx, col_idx))
-                        
-                        if keyword_positions and len(keyword_positions) >= n:
-                            target_pos = keyword_positions[n - 1]
-                            target_row = target_pos[0] + y
-                            target_col = target_pos[1] + x
-                            
-                            if target_row >= 0 and target_row < df.shape[0] and \
-                               target_col >= 0 and target_col < df.shape[1]:
-                                value = df.iat[target_row, target_col]
-                                cleaned_value = self.remove_parentheses(str(value))
-                                print(f"찾은 값: {cleaned_value} (키워드: {keyword})")
-                                update_data.append((row['row_idx'], cleaned_value))
-                    
-                    except Exception as e:
-                        print(f"행 처리 중 오류: {str(e)}")
+        try:
+            print(f"시작 행: {start_row}, 대상 열: {last_col}")
+            all_rows = archive.get_all_values()
+            update_data = []
+            sheet_cache = {}
             
-            except Exception as e:
-                print(f"시트 '{sheet_name}' 처리 중 오류 발생: {str(e)}")
-        
-        if update_data:
-            try:
-                # 업데이트할 전체 범위 계산
-                min_row = min(row for row, _ in update_data)
-                max_row = max(row for row, _ in update_data)
-                
-                # 현재 데이터 가져오기
-                existing_data = archive.get_values(f'A{min_row}:Z{max_row}')
-                
-                # 업데이트할 데이터 준비
-                for row, value in update_data:
-                    # row는 1-based index이므로 조정 필요
-                    adjusted_row = row - min_row
-                    if adjusted_row < len(existing_data):
-                        while len(existing_data[adjusted_row]) < last_col:
-                            existing_data[adjusted_row].append('')
-                        existing_data[adjusted_row][last_col - 1] = value
-                
-                # 일괄 업데이트
-                try:
-                    range_label = f'A{min_row}:{chr(64+last_col)}{max_row}'
-                    archive.batch_update([{
-                        'range': range_label,
-                        'values': existing_data
-                    }])
-                    print(f"일괄 업데이트 완료: {min_row}~{max_row} 행")
+            sheet_rows = {}
+            for row_idx in range(start_row - 1, len(all_rows)):
+                if len(all_rows[row_idx]) < 5:
+                    continue
                     
-                except gspread.exceptions.APIError as e:
-                    if 'Quota exceeded' in str(e):
-                        print("할당량 제한 도달. 60초 대기 후 재시도...")
-                        time.sleep(60)
+                sheet_name = all_rows[row_idx][0]
+                if not sheet_name:
+                    continue
+                    
+                if sheet_name not in sheet_rows:
+                    sheet_rows[sheet_name] = []
+                sheet_rows[sheet_name].append({
+                    'row_idx': row_idx + 1,
+                    'keyword': all_rows[row_idx][1],
+                    'n': all_rows[row_idx][2],
+                    'x': all_rows[row_idx][3],
+                    'y': all_rows[row_idx][4]
+                })
+            
+            for sheet_name, rows in sheet_rows.items():
+                try:
+                    print(f"시트 '{sheet_name}' 처리 중...")
+                    
+                    if sheet_name not in sheet_cache:
+                        search_sheet = self.workbook.worksheet(sheet_name)
+                        sheet_data = search_sheet.get_all_values()
+                        df = pd.DataFrame(sheet_data)
+                        sheet_cache[sheet_name] = df
+                        print(f"시트 '{sheet_name}' 데이터 로드 완료 (크기: {df.shape})")
+                    
+                    df = sheet_cache[sheet_name]
+                    
+                    for row in rows:
+                        keyword = row['keyword']
+                        if not keyword or not row['n'] or not row['x'] or not row['y']:
+                            continue
+                        
+                        try:
+                            n = int(row['n'])
+                            x = int(row['x'])
+                            y = int(row['y'])
+                            
+                            keyword_positions = []
+                            for idx, df_row in df.iterrows():
+                                for col_idx, value in enumerate(df_row):
+                                    if value == keyword:
+                                        keyword_positions.append((idx, col_idx))
+                            
+                            if keyword_positions and len(keyword_positions) >= n:
+                                target_pos = keyword_positions[n - 1]
+                                target_row = target_pos[0] + y
+                                target_col = target_pos[1] + x
+                                
+                                if target_row >= 0 and target_row < df.shape[0] and \
+                                   target_col >= 0 and target_col < df.shape[1]:
+                                    value = df.iat[target_row, target_col]
+                                    cleaned_value = self.remove_parentheses(str(value))
+                                    print(f"찾은 값: {cleaned_value} (키워드: {keyword})")
+                                    update_data.append((row['row_idx'], cleaned_value))
+                        
+                        except Exception as e:
+                            print(f"행 처리 중 오류: {str(e)}")
+                
+                except Exception as e:
+                    print(f"시트 '{sheet_name}' 처리 중 오류 발생: {str(e)}")
+            
+            if update_data:
+                try:
+                    # 업데이트할 전체 범위 계산
+                    min_row = min(row for row, _ in update_data)
+                    max_row = max(row for row, _ in update_data)
+                    
+                    # 현재 데이터 가져오기
+                    existing_data = archive.get_values(f'A{min_row}:Z{max_row}')
+                    
+                    # 업데이트할 데이터 준비
+                    for row, value in update_data:
+                        # row는 1-based index이므로 조정 필요
+                        adjusted_row = row - min_row
+                        if adjusted_row < len(existing_data):
+                            while len(existing_data[adjusted_row]) < last_col:
+                                existing_data[adjusted_row].append('')
+                            existing_data[adjusted_row][last_col - 1] = value
+                    
+                    # 일괄 업데이트
+                    try:
+                        range_label = f'A{min_row}:{chr(64+last_col)}{max_row}'
                         archive.batch_update([{
                             'range': range_label,
                             'values': existing_data
                         }])
-                    else:
-                        raise e
-                
-                # 최종 정보 업데이트 (한 번에 처리)
-                today = datetime.now()
-                three_months_ago = today - timedelta(days=90)
-                year = str(three_months_ago.year)[2:]
-                quarter = (three_months_ago.month - 1) // 3 + 1
-                quarter_text = f"{quarter}Q{year}"
-                
-                final_updates = [
-                    {'range': f'J1', 'values': [[today.strftime('%Y-%m-%d')]]},
-                    {'range': f'{chr(64+last_col)}1', 'values': [['1']]},
-                    {'range': f'{chr(64+last_col)}5', 'values': [[today.strftime('%Y-%m-%d')]]},
-                    {'range': f'{chr(64+last_col)}6', 'values': [[quarter_text]]}
-                ]
-                
-                try:
-                    archive.batch_update(final_updates)
-                    print(f"최종 업데이트 완료 (이전 분기: {quarter_text})")
-                except gspread.exceptions.APIError as e:
-                    if 'Quota exceeded' in str(e):
-                        print("최종 업데이트 중 할당량 제한. 60초 대기 후 재시도...")
-                        time.sleep(60)
+                        print(f"일괄 업데이트 완료: {min_row}~{max_row} 행")
+                        
+                    except gspread.exceptions.APIError as e:
+                        if 'Quota exceeded' in str(e):
+                            print("할당량 제한 도달. 60초 대기 후 재시도...")
+                            time.sleep(60)
+                            archive.batch_update([{
+                                'range': range_label,
+                                'values': existing_data
+                            }])
+                        else:
+                            raise e
+                    
+                    # 최종 정보 업데이트 (한 번에 처리)
+                    today = datetime.now()
+                    three_months_ago = today - timedelta(days=90)
+                    year = str(three_months_ago.year)[2:]
+                    quarter = (three_months_ago.month - 1) // 3 + 1
+                    quarter_text = f"{quarter}Q{year}"
+                    
+                    final_updates = [
+                        {'range': f'J1', 'values': [[today.strftime('%Y-%m-%d')]]},
+                        {'range': f'{chr(64+last_col)}1', 'values': [['1']]},
+                        {'range': f'{chr(64+last_col)}5', 'values': [[today.strftime('%Y-%m-%d')]]},
+                        {'range': f'{chr(64+last_col)}6', 'values': [[quarter_text]]}
+                    ]
+                    
+                    try:
                         archive.batch_update(final_updates)
-                    else:
-                        raise e
-                
-            except Exception as e:
-                print(f"업데이트 중 오류 발생: {str(e)}")
-                raise e
+                        print(f"최종 업데이트 완료 (이전 분기: {quarter_text})")
+                        
+                        # 텔레그램 메시지 전송
+                        message = (
+                            f"🔄 DART 업데이트 완료\n\n"
+                            f"• 종목: {self.corp_code}\n"
+                            f"• 분기: {quarter_text}\n"
+                            f"• 업데이트 일시: {today.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                            f"• 처리된 행: {len(update_data)}개\n"
+                            f"• 시트 열 번호: {last_col}"
+                        )
+                        self.send_telegram_message(message)
+                        
+                    except gspread.exceptions.APIError as e:
+                        if 'Quota exceeded' in str(e):
+                            print("최종 업데이트 중 할당량 제한. 60초 대기 후 재시도...")
+                            time.sleep(60)
+                            archive.batch_update(final_updates)
+                        else:
+                            raise e
+                    
+                except Exception as e:
+                    error_msg = f"업데이트 중 오류 발생: {str(e)}"
+                    print(error_msg)
+                    self.send_telegram_message(f"❌ {error_msg}")
+                    raise e
+                    
+        except Exception as e:
+            error_msg = f"아카이브 처리 중 오류 발생: {str(e)}"
+            print(error_msg)
+            self.send_telegram_message(f"❌ {error_msg}")
+            raise e
+
+
+    def send_telegram_message(self, message):
+        """텔레그램으로 메시지 전송"""
+        if not self.telegram_bot_token or not self.telegram_channel_id:
+            print("텔레그램 설정이 없습니다.")
+            return
+        
+        try:
+            url = f"https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage"
+            data = {
+                "chat_id": self.telegram_channel_id,
+                "text": message,
+                "parse_mode": "HTML"
+            }
+            response = requests.post(url, data=data)
+            response.raise_for_status()
+            print("텔레그램 메시지 전송 완료")
+        except Exception as e:
+            print(f"텔레그램 메시지 전송 실패: {str(e)}")
 
 def main():
     try:
@@ -385,6 +431,12 @@ def main():
         log(f"오류 상세 정보: {type(e).__name__}")
         import traceback
         log(traceback.format_exc())
+        
+        updater.send_telegram_message(
+            f"❌ DART 업데이트 중 치명적 오류 발생\n\n"
+            f"• 종목: {COMPANY_INFO['name']} ({COMPANY_INFO['code']})\n"
+            f"• 오류: {str(e)}"
+        )
         raise
 
 if __name__ == "__main__":
