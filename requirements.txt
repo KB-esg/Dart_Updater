@@ -1,0 +1,11 @@
+gspread>=5.12.0
+oauth2client>=4.1.3
+google-auth>=2.23.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.1.1
+OpenDartReader>=0.2.3
+pandas>=2.1.0
+beautifulsoup4>=4.12.0
+html_table_parser>=0.1.0
+tqdm>=4.66.0
+requests>=2.31.0
