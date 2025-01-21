@@ -375,10 +375,10 @@ def main():
                     last_row_with_data = len(data) - next(i for i, x in enumerate(reversed(data)) if x) - 1
                     start_row = max(last_row_with_data + 1, 10)
                 except StopIteration:
-                    start_row = 10
+                    start_row = 7
             else:
                 last_col += 1
-                start_row = 10  # 항상 10에서 시작하도록 수정
+                start_row = 7  # 항상 10에서 시작하도록 수정
             
             log(f"처리 시작 행: {start_row}, 대상 열: {last_col}")
             updater.process_archive_data(archive, start_row, last_col)
