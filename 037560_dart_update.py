@@ -22,7 +22,7 @@ class DartReportUpdater:
        'XI. 그 밖에 투자자 보호를 위하여 필요한 사항'
    ]
 
-    def __init__(self, corp_code, spreadsheet_var_name, company_name):
+   def __init__(self, corp_code, spreadsheet_var_name, company_name):
         """
         초기화
         :param corp_code: 종목 코드 (예: '018260')
