@@ -1,4 +1,4 @@
-name: 31_LG Hellovision DART Update
+name: LG Hellovision DART Update
 
 on:
   schedule:
@@ -9,7 +9,7 @@ on:
 jobs:
   update-dart-reports:
     runs-on: ubuntu-latest
-    timeout-minutes: 30         # 작업 시간 제한
+    timeout-minutes: 30
     
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
@@ -53,50 +53,40 @@ jobs:
         run: python 037560_dart_update.py
         continue-on-error: true
           
-      - name: Send Telegram notification on success
-        if: steps.update-dart.outcome == 'success'
+      - name: Send Telegram notification
+        if: always()
         run: |
-          python - <<EOF
-import requests
-import os
-from datetime import datetime
-
-bot_token = os.environ['TELEGRAM_BOT_TOKEN']
-chat_id = os.environ['TELEGRAM_CHANNEL_ID']
-
-message = f'''✅ DART 업데이트 완료
-
+          python -c "
+          import requests
+          import os
+          from datetime import datetime
+          
+          def send_telegram(status):
+              bot_token = os.environ['TELEGRAM_BOT_TOKEN']
+              chat_id = os.environ['TELEGRAM_CHANNEL_ID']
+              
+              if status == 'success':
+                  message = f'''✅ DART 업데이트 완료\n
 • 종목: LG헬로비전 (037560)
 • 실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 • GitHub Action 상태: 성공'''
-
-requests.post(
-    f'https://api.telegram.org/bot{bot_token}/sendMessage',
-    data={'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML'}
-)
-EOF
-
-      - name: Send Telegram notification on failure
-        if: steps.update-dart.outcome == 'failure'
-        run: |
-          python - <<EOF
-import requests
-import os
-from datetime import datetime
-
-bot_token = os.environ['TELEGRAM_BOT_TOKEN']
-chat_id = os.environ['TELEGRAM_CHANNEL_ID']
-
-message = f'''❌ DART 업데이트 실패
-
+              else:
+                  message = f'''❌ DART 업데이트 실패\n
 • 종목: LG헬로비전 (037560)
 • 실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-• GitHub Action 상태: 실패
-
+• GitHub Action 상태: 실패\n
 GitHub Actions 로그를 확인해주세요.'''
-
-requests.post(
-    f'https://api.telegram.org/bot{bot_token}/sendMessage',
-    data={'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML'}
-)
-EOF
+              
+              try:
+                  response = requests.post(
+                      f'https://api.telegram.org/bot{bot_token}/sendMessage',
+                      data={'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML'}
+                  )
+                  response.raise_for_status()
+                  print('Telegram notification sent successfully')
+              except Exception as e:
+                  print(f'Failed to send Telegram notification: {str(e)}')
+          
+          status = 'success' if '${{ steps.update-dart.outcome }}' == 'success' else 'failure'
+          send_telegram(status)
+          "
