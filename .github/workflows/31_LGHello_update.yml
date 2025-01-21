@@ -1,4 +1,4 @@
-name: LG Hellovision DART Update
+name: 31_LG Hellovision DART Update
 
 on:
   schedule:
@@ -20,13 +20,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4    # v4로 업데이트
+        uses: actions/checkout@v4
         
       - name: Set up Python
-        uses: actions/setup-python@v5  # v5로 업데이트
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-          cache: 'pip'               # 의존성 캐싱 활성화
+          cache: 'pip'
           
       - name: Install dependencies
         run: |
@@ -50,51 +50,53 @@ jobs:
           
       - name: Run DART update script
         id: update-dart
-        run: |
-          python 037560_dart_update.py
-        continue-on-error: true    # 스크립트 실패해도 계속 진행
+        run: python 037560_dart_update.py
+        continue-on-error: true
           
-      - name: Send Telegram notification
-        if: always()              # 항상 실행
+      - name: Send Telegram notification on success
+        if: steps.update-dart.outcome == 'success'
         run: |
-          if [ "${{ steps.update-dart.outcome }}" == "success" ]; then
-            python -c "
-            import requests
-            import os
-            from datetime import datetime
-            
-            bot_token = os.environ['TELEGRAM_BOT_TOKEN']
-            chat_id = os.environ['TELEGRAM_CHANNEL_ID']
-            
-            message = f'''✅ DART 업데이트 완료
-            
-            • 종목: LG헬로비전 (037560)
-            • 실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-            • GitHub Action 상태: 성공'''
-            
-            requests.post(
-                f'https://api.telegram.org/bot{bot_token}/sendMessage',
-                data={'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML'}
-            )"
-          else
-            python -c "
-            import requests
-            import os
-            from datetime import datetime
-            
-            bot_token = os.environ['TELEGRAM_BOT_TOKEN']
-            chat_id = os.environ['TELEGRAM_CHANNEL_ID']
-            
-            message = f'''❌ DART 업데이트 실패
-            
-            • 종목: LG헬로비전 (037560)
-            • 실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-            • GitHub Action 상태: 실패
-            
-            GitHub Actions 로그를 확인해주세요.'''
-            
-            requests.post(
-                f'https://api.telegram.org/bot{bot_token}/sendMessage',
-                data={'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML'}
-            )"
-          fi
+          python - <<EOF
+import requests
+import os
+from datetime import datetime
+
+bot_token = os.environ['TELEGRAM_BOT_TOKEN']
+chat_id = os.environ['TELEGRAM_CHANNEL_ID']
+
+message = f'''✅ DART 업데이트 완료
+
+• 종목: LG헬로비전 (037560)
+• 실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+• GitHub Action 상태: 성공'''
+
+requests.post(
+    f'https://api.telegram.org/bot{bot_token}/sendMessage',
+    data={'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML'}
+)
+EOF
+
+      - name: Send Telegram notification on failure
+        if: steps.update-dart.outcome == 'failure'
+        run: |
+          python - <<EOF
+import requests
+import os
+from datetime import datetime
+
+bot_token = os.environ['TELEGRAM_BOT_TOKEN']
+chat_id = os.environ['TELEGRAM_CHANNEL_ID']
+
+message = f'''❌ DART 업데이트 실패
+
+• 종목: LG헬로비전 (037560)
+• 실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+• GitHub Action 상태: 실패
+
+GitHub Actions 로그를 확인해주세요.'''
+
+requests.post(
+    f'https://api.telegram.org/bot{bot_token}/sendMessage',
+    data={'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML'}
+)
+EOF
