@@ -340,7 +340,7 @@ def main():
         COMPANY_INFO = {
             'code': '037560',
             'name': 'LG헬로비전',
-            'spreadsheet_var': 'LGHELLO_SPREADSHEET_ID'
+            'spreadsheet_var': 'HELLO_SPREADSHEET_ID'
         }
         
         log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
@@ -369,16 +369,12 @@ def main():
             control_value = archive.cell(1, last_col).value
             log(f"Control value: {control_value}")
             
-            if not control_value:
-                data = archive.col_values(last_col)
-                try:
-                    last_row_with_data = len(data) - next(i for i, x in enumerate(reversed(data)) if x) - 1
-                    start_row = max(last_row_with_data + 1, 10)
-                except StopIteration:
-                    start_row = 7
-            else:
+            # 시작 행은 항상 10으로 설정
+            start_row = 10
+            
+            # control_value에 따라 열만 조정
+            if control_value:
                 last_col += 1
-                start_row = 7  # 항상 10에서 시작하도록 수정
             
             log(f"처리 시작 행: {start_row}, 대상 열: {last_col}")
             updater.process_archive_data(archive, start_row, last_col)
