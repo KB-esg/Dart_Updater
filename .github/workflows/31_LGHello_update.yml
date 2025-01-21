@@ -1,0 +1,41 @@
+name: 31_LG Hellovision DART Update
+
+on:
+  schedule:
+    - cron: '2 0 31 3 *'  # 3월 31일 오전 9시(UTC 0시)에 실행
+    - cron: '2 0 17 5,8,11 *'  # 5월, 8월, 11월 17일 오전 9시(UTC 0시)에 실행
+  workflow_dispatch:      # 수동 실행 가능
+
+jobs:
+  update-LG_CNS-reports:
+    runs-on: ubuntu-latest
+    
+    env:
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      LGCNS_SPREADSHEET_ID: ${{ secrets.LGHello_SPREADSHEET_ID }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install gspread oauth2client google-auth google-auth-oauthlib google-auth-httplib2 
+          pip install opendartreader pandas beautifulsoup4 html_table_parser tqdm
+
+      - name: Verify environment variables
+        run: |
+          echo "Checking environment variables..."
+          echo "DART_API_KEY exists: ${{ env.DART_API_KEY != '' }}"
+          echo "GOOGLE_CREDENTIALS exists: ${{ env.GOOGLE_CREDENTIALS != '' }}"
+          echo "AUTOEVER_SPREADSHEET_ID exists: ${{ env.LGCNS_SPREADSHEET_ID != '' }}"
+
+      - name: Run DART update script
+        run: python 037560_dart_update.py
