@@ -156,14 +156,22 @@ class DartReportUpdater:
             update_data = []
             sheet_cache = {}
             
+            print(f"전체 행 수: {len(all_rows)}")
+            
             sheet_rows = {}
             for row_idx in range(start_row - 1, len(all_rows)):
                 if len(all_rows[row_idx]) < 5:
+                    print(f"행 {row_idx + 1}: 데이터 부족 (컬럼 수: {len(all_rows[row_idx])})")
                     continue
                     
                 sheet_name = all_rows[row_idx][0]
                 if not sheet_name:
+                    print(f"행 {row_idx + 1}: 시트명 없음")
                     continue
+                
+                print(f"행 {row_idx + 1} 처리: 시트={sheet_name}, " + 
+                      f"키워드={all_rows[row_idx][1]}, n={all_rows[row_idx][2]}, " +
+                      f"x={all_rows[row_idx][3]}, y={all_rows[row_idx][4]}")
                     
                 if sheet_name not in sheet_rows:
                     sheet_rows[sheet_name] = []
@@ -175,9 +183,12 @@ class DartReportUpdater:
                     'y': all_rows[row_idx][4]
                 })
             
+            print(f"처리할 시트 목록: {list(sheet_rows.keys())}")
+            
             for sheet_name, rows in sheet_rows.items():
                 try:
-                    print(f"시트 '{sheet_name}' 처리 중...")
+                    print(f"\n시트 '{sheet_name}' 처리 중...")
+                    print(f"검색할 키워드 수: {len(rows)}")
                     
                     if sheet_name not in sheet_cache:
                         search_sheet = self.workbook.worksheet(sheet_name)
@@ -191,6 +202,7 @@ class DartReportUpdater:
                     for row in rows:
                         keyword = row['keyword']
                         if not keyword or not row['n'] or not row['x'] or not row['y']:
+                            print(f"행 {row['row_idx']}: 검색 정보 부족")
                             continue
                         
                         try:
@@ -203,6 +215,8 @@ class DartReportUpdater:
                                 for col_idx, value in enumerate(df_row):
                                     if value == keyword:
                                         keyword_positions.append((idx, col_idx))
+                                        
+                            print(f"키워드 '{keyword}' 검색 결과: {len(keyword_positions)}개 발견")
                             
                             if keyword_positions and len(keyword_positions) >= n:
                                 target_pos = keyword_positions[n - 1]
@@ -215,12 +229,18 @@ class DartReportUpdater:
                                     cleaned_value = self.remove_parentheses(str(value))
                                     print(f"찾은 값: {cleaned_value} (키워드: {keyword})")
                                     update_data.append((row['row_idx'], cleaned_value))
+                                else:
+                                    print(f"행 {row['row_idx']}: 대상 위치가 범위를 벗어남 ({target_row}, {target_col})")
+                            else:
+                                print(f"행 {row['row_idx']}: 키워드 '{keyword}'를 {n}번째로 찾을 수 없음")
                         
                         except Exception as e:
-                            print(f"행 처리 중 오류: {str(e)}")
+                            print(f"행 {row['row_idx']} 처리 중 오류: {str(e)}")
                 
                 except Exception as e:
                     print(f"시트 '{sheet_name}' 처리 중 오류 발생: {str(e)}")
+            
+            print(f"\n업데이트할 데이터 수: {len(update_data)}")
             
             if update_data:
                 try:
