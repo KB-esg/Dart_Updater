@@ -13,7 +13,7 @@ jobs:
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-      LGCNS_SPREADSHEET_ID: ${{ secrets.LGHello_SPREADSHEET_ID }}
+      LGHello_SPREADSHEET_ID: ${{ secrets.LGHello_SPREADSHEET_ID }}
 
     steps:
       - name: Checkout repository
@@ -35,7 +35,7 @@ jobs:
           echo "Checking environment variables..."
           echo "DART_API_KEY exists: ${{ env.DART_API_KEY != '' }}"
           echo "GOOGLE_CREDENTIALS exists: ${{ env.GOOGLE_CREDENTIALS != '' }}"
-          echo "AUTOEVER_SPREADSHEET_ID exists: ${{ env.LGCNS_SPREADSHEET_ID != '' }}"
+          echo "LGHello_SPREADSHEET_ID exists: ${{ env.LGHello_SPREADSHEET_ID != '' }}"
 
       - name: Run DART update script
         run: python 037560_dart_update.py
