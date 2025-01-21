@@ -12,6 +12,7 @@ from html_table_parser import parser_functions as parser
 import pandas as pd
 
 class DartReportUpdater:
+    # 클래스 상수 정의
     TARGET_SHEETS = [
         'I. 회사의 개요', 'II. 사업의 내용', '1. 사업의 개요', '2. 주요 제품 및 서비스',
         '3. 원재료 및 생산설비', '4. 매출 및 수주상황', '5. 위험관리 및 파생거래',
@@ -49,6 +50,16 @@ class DartReportUpdater:
         self.workbook = self.gc.open_by_key(os.environ[spreadsheet_var_name])
         self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
         self.telegram_channel_id = os.environ.get('TELEGRAM_CHANNEL_ID')
+        
+        if spreadsheet_var_name not in os.environ:
+            raise ValueError(f"{spreadsheet_var_name} 환경변수가 설정되지 않았습니다.")
+            
+        self.credentials = self.get_credentials()
+        self.gc = gspread.authorize(self.credentials)
+        self.dart = OpenDartReader(os.environ['DART_API_KEY'])
+        self.workbook = self.gc.open_by_key(os.environ[spreadsheet_var_name])
+        self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+        self.telegram_channel_id = os.environ.get('TELEGRAM_CHANNEL_ID')
 
     def get_credentials(self):
         """Google Sheets 인증 설정"""
@@ -59,11 +70,11 @@ class DartReportUpdater:
         ]
         return Credentials.from_service_account_info(creds_json, scopes=scopes)
 
-    def get_recent_dates(self):
-        """최근 3개월 날짜 범위 계산"""
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=90)
-        return start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
+    def remove_parentheses(self, value):
+        """괄호 내용 제거"""
+        if not value:
+            return value
+        return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
 
     def send_telegram_message(self, message):
         """텔레그램으로 메시지 전송"""
@@ -84,6 +95,13 @@ class DartReportUpdater:
         except Exception as e:
             print(f"텔레그램 메시지 전송 실패: {str(e)}")
 
+    def get_recent_dates(self):
+        """최근 3개월 날짜 범위 계산"""
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=90)
+        return start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
+
+    
     def update_dart_reports(self):
         """DART 보고서 데이터 업데이트"""
         start_date, end_date = self.get_recent_dates()
@@ -101,6 +119,7 @@ class DartReportUpdater:
         
         for _, doc in target_docs.iterrows():
             self.update_worksheet(doc['title'], doc['url'])
+
 
     def update_worksheet(self, sheet_name, url):
         """워크시트 업데이트"""
@@ -147,8 +166,6 @@ class DartReportUpdater:
             return value
         return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
 
-
-class DartReportUpdater:
     def process_archive_data(self, archive, start_row, last_col):
         """아카이브 데이터 처리"""
         try:
