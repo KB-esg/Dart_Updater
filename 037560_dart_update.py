@@ -378,7 +378,7 @@ def main():
                     start_row = 10
             else:
                 last_col += 1
-                start_row = 10
+                start_row = 10  # 항상 10에서 시작하도록 수정
             
             log(f"처리 시작 행: {start_row}, 대상 열: {last_col}")
             updater.process_archive_data(archive, start_row, last_col)
