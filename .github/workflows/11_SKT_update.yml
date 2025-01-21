@@ -2,40 +2,50 @@ name: 21_SK telecom DART Update
 
 on:
   schedule:
-    - cron: '0 1 31 3 *'  # 3월 31일 오전 10시(UTC 0시)에 실행
-    - cron: '0 1 17 5,8,11 *'  # 5월, 8월, 11월 17일 오전 10시(UTC 0시)에 실행
-  workflow_dispatch:      # 수동 실행 가능
+    - cron: '0 1 31 3 *'        # 3월 31일 오전 11시(UTC 0시)
+    - cron: '0 1 17 5,8,11 *'   # 5월, 8월, 11월 17일 오전 11시(UTC 0시)
+  workflow_dispatch:             # 수동 실행 가능
 
 jobs:
-  update-SK_Telecom-reports:
+  update-dart-reports:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
       SKT_SPREADSHEET_ID: ${{ secrets.SKT_SPREADSHEET_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v2
-
+        uses: actions/checkout@v4
+        
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
-
+          cache: 'pip'
+          
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install gspread oauth2client google-auth google-auth-oauthlib google-auth-httplib2 
-          pip install opendartreader pandas beautifulsoup4 html_table_parser tqdm
-
+          pip install -r requirements.txt
+          
       - name: Verify environment variables
         run: |
           echo "Checking environment variables..."
-          echo "DART_API_KEY exists: ${{ env.DART_API_KEY != '' }}"
-          echo "GOOGLE_CREDENTIALS exists: ${{ env.GOOGLE_CREDENTIALS != '' }}"
-          echo "SKT_SPREADSHEET_ID exists: ${{ env.SKT_SPREADSHEET_ID != '' }}"
-
+          for var in "DART_API_KEY" "GOOGLE_CREDENTIALS" "LGHELLO_SPREADSHEET_ID" "TELEGRAM_BOT_TOKEN" "TELEGRAM_CHANNEL_ID"; do
+            if [ -z "${!var}" ]; then
+              echo "Error: $var is not set"
+              exit 1
+            else
+              echo "$var exists: true"
+            fi
+          done
+          
       - name: Run DART update script
+        id: update-dart
         run: python 017670_dart_update.py
+        continue-on-error: true
