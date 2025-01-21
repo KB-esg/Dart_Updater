@@ -1,5 +1,4 @@
 name: 31_LG Hellovision DART Update
-
 on:
   schedule:
     - cron: '2 0 31 3 *'  # 3월 31일 오전 9시(UTC 0시)에 실행
@@ -14,6 +13,8 @@ jobs:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
       LGHELLO_SPREADSHEET_ID: ${{ secrets.LGHELLO_SPREADSHEET_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
       - name: Checkout repository
@@ -29,6 +30,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install gspread oauth2client google-auth google-auth-oauthlib google-auth-httplib2 
           pip install opendartreader pandas beautifulsoup4 html_table_parser tqdm
+          pip install python-telegram-bot
 
       - name: Verify environment variables
         run: |
@@ -36,6 +38,33 @@ jobs:
           echo "DART_API_KEY exists: ${{ env.DART_API_KEY != '' }}"
           echo "GOOGLE_CREDENTIALS exists: ${{ env.GOOGLE_CREDENTIALS != '' }}"
           echo "LGHELLO_SPREADSHEET_ID exists: ${{ env.LGHELLO_SPREADSHEET_ID != '' }}"
+          echo "TELEGRAM_BOT_TOKEN exists: ${{ env.TELEGRAM_BOT_TOKEN != '' }}"
+          echo "TELEGRAM_CHAT_ID exists: ${{ env.TELEGRAM_CHAT_ID != '' }}"
 
       - name: Run DART update script
+        id: dart-update
         run: python 037560_dart_update.py
+
+      - name: Send Telegram notification on success
+        if: success()
+        run: |
+          python -c "
+          import telegram
+          bot = telegram.Bot(token='${{ env.TELEGRAM_BOT_TOKEN }}')
+          bot.send_message(
+              chat_id='${{ env.TELEGRAM_CHAT_ID }}',
+              text='✅ LG Hellovision DART 업데이트가 성공적으로 완료되었습니다.'
+          )
+          "
+
+      - name: Send Telegram notification on failure
+        if: failure()
+        run: |
+          python -c "
+          import telegram
+          bot = telegram.Bot(token='${{ env.TELEGRAM_BOT_TOKEN }}')
+          bot.send_message(
+              chat_id='${{ env.TELEGRAM_CHAT_ID }}',
+              text='❌ LG Hellovision DART 업데이트 중 오류가 발생했습니다. GitHub Actions 로그를 확인해주세요.'
+          )
+          "
