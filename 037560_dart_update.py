@@ -12,7 +12,6 @@ from html_table_parser import parser_functions as parser
 import pandas as pd
 
 class DartReportUpdater:
-    # 클래스 상수 정의
     TARGET_SHEETS = [
         'I. 회사의 개요', 'II. 사업의 내용', '1. 사업의 개요', '2. 주요 제품 및 서비스',
         '3. 원재료 및 생산설비', '4. 매출 및 수주상황', '5. 위험관리 및 파생거래',
@@ -50,16 +49,6 @@ class DartReportUpdater:
         self.workbook = self.gc.open_by_key(os.environ[spreadsheet_var_name])
         self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
         self.telegram_channel_id = os.environ.get('TELEGRAM_CHANNEL_ID')
-        
-        if spreadsheet_var_name not in os.environ:
-            raise ValueError(f"{spreadsheet_var_name} 환경변수가 설정되지 않았습니다.")
-            
-        self.credentials = self.get_credentials()
-        self.gc = gspread.authorize(self.credentials)
-        self.dart = OpenDartReader(os.environ['DART_API_KEY'])
-        self.workbook = self.gc.open_by_key(os.environ[spreadsheet_var_name])
-        self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
-        self.telegram_channel_id = os.environ.get('TELEGRAM_CHANNEL_ID')
 
     def get_credentials(self):
         """Google Sheets 인증 설정"""
@@ -70,11 +59,19 @@ class DartReportUpdater:
         ]
         return Credentials.from_service_account_info(creds_json, scopes=scopes)
 
-    def remove_parentheses(self, value):
-        """괄호 내용 제거"""
-        if not value:
-            return value
-        return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
+    def get_recent_dates(self):
+        """최근 3개월 날짜 범위 계산"""
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=90)
+        return start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
+
+    def get_column_letter(self, col_num):
+        """숫자를 엑셀 열 문자로 변환 (예: 1 -> A, 27 -> AA)"""
+        result = ""
+        while col_num > 0:
+            col_num, remainder = divmod(col_num - 1, 26)
+            result = chr(65 + remainder) + result
+        return result
 
     def send_telegram_message(self, message):
         """텔레그램으로 메시지 전송"""
@@ -95,13 +92,6 @@ class DartReportUpdater:
         except Exception as e:
             print(f"텔레그램 메시지 전송 실패: {str(e)}")
 
-    def get_recent_dates(self):
-        """최근 3개월 날짜 범위 계산"""
-        end_date = datetime.now()
-        start_date = end_date - timedelta(days=90)
-        return start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
-
-    
     def update_dart_reports(self):
         """DART 보고서 데이터 업데이트"""
         start_date, end_date = self.get_recent_dates()
@@ -120,7 +110,6 @@ class DartReportUpdater:
         for _, doc in target_docs.iterrows():
             self.update_worksheet(doc['title'], doc['url'])
 
-
     def update_worksheet(self, sheet_name, url):
         """워크시트 업데이트"""
         try:
@@ -132,6 +121,12 @@ class DartReportUpdater:
         if response.status_code == 200:
             self.process_html_content(worksheet, response.text)
             print(f"시트 업데이트 완료: {sheet_name}")
+
+    def remove_parentheses(self, value):
+        """괄호 내용 제거"""
+        if not value:
+            return value
+        return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
 
     def process_html_content(self, worksheet, html_content):
         """HTML 내용 처리 및 워크시트 업데이트"""
@@ -160,49 +155,50 @@ class DartReportUpdater:
                 else:
                     raise e
 
-    def remove_parentheses(self, value):
-        """괄호 내용 제거"""
-        if not value:
-            return value
-        return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
-
 
     def process_archive_data(self, archive, start_row, last_col):
         """아카이브 데이터 처리"""
         try:
-            print(f"시작 행: {start_row}, 대상 열: {last_col}")
-            all_rows = archive.get_all_values()
-            update_data = []
-            sheet_cache = {}
-            
-            # 현재 시트의 크기 확인 및 조정
+            # 현재 시트의 크기 확인
             current_cols = archive.col_count
-            print(f"현재 시트 열 수: {current_cols}")
+            current_col_letter = self.get_column_letter(current_cols)
+            target_col_letter = self.get_column_letter(last_col)
             
-            if last_col > current_cols:
-                new_cols = last_col + 10  # 여유 있게 열 추가
+            print(f"시작 행: {start_row}, 대상 열: {last_col} ({target_col_letter})")
+            print(f"현재 시트 열 수: {current_cols} ({current_col_letter})")
+            
+            # 필요한 경우 시트 크기 조정
+            if last_col >= current_cols:
+                new_cols = last_col + 5  # 여유 있게 5열 추가
                 try:
-                    print(f"시트 크기를 {current_cols}에서 {new_cols}로 조정합니다.")
+                    print(f"시트 크기를 {current_cols}({current_col_letter})에서 {new_cols}({self.get_column_letter(new_cols)})로 조정합니다.")
                     archive.resize(rows=archive.row_count, cols=new_cols)
-                    current_cols = new_cols  # 새로운 열 크기 저장
                     time.sleep(2)  # API 호출 후 대기
-                    print(f"시트 크기 조정 완료. 현재 열 수: {current_cols}")
+                    print("시트 크기 조정 완료")
                 except Exception as e:
                     print(f"시트 크기 조정 중 오류 발생: {str(e)}")
                     raise
 
-            # 데이터 수집 코드 시작
-            print(f"전체 행 수: {len(all_rows)}")
-            sheet_rows = {}
+            # 데이터 수집 시작
+            all_rows = archive.get_all_values()
+            update_data = []
+            sheet_cache = {}
             
+            sheet_rows = {}
             for row_idx in range(start_row - 1, len(all_rows)):
                 if len(all_rows[row_idx]) < 5:
+                    print(f"행 {row_idx + 1}: 데이터 부족 (컬럼 수: {len(all_rows[row_idx])})")
                     continue
                     
                 sheet_name = all_rows[row_idx][0]
                 if not sheet_name:
+                    print(f"행 {row_idx + 1}: 시트명 없음")
                     continue
-                    
+                
+                print(f"행 {row_idx + 1} 처리: 시트={sheet_name}, " + 
+                      f"키워드={all_rows[row_idx][1]}, n={all_rows[row_idx][2]}, " +
+                      f"x={all_rows[row_idx][3]}, y={all_rows[row_idx][4]}")
+                
                 if sheet_name not in sheet_rows:
                     sheet_rows[sheet_name] = []
                 sheet_rows[sheet_name].append({
@@ -213,10 +209,11 @@ class DartReportUpdater:
                     'y': all_rows[row_idx][4]
                 })
             
-            # 각 시트별 데이터 처리
             for sheet_name, rows in sheet_rows.items():
                 try:
                     print(f"\n시트 '{sheet_name}' 처리 중...")
+                    print(f"검색할 키워드 수: {len(rows)}")
+                    
                     if sheet_name not in sheet_cache:
                         search_sheet = self.workbook.worksheet(sheet_name)
                         sheet_data = search_sheet.get_all_values()
@@ -229,6 +226,7 @@ class DartReportUpdater:
                     for row in rows:
                         keyword = row['keyword']
                         if not keyword or not row['n'] or not row['x'] or not row['y']:
+                            print(f"행 {row['row_idx']}: 검색 정보 부족")
                             continue
                         
                         try:
@@ -259,10 +257,10 @@ class DartReportUpdater:
                                     print(f"행 {row['row_idx']}: 대상 위치가 범위를 벗어남 ({target_row}, {target_col})")
                             else:
                                 print(f"행 {row['row_idx']}: 키워드 '{keyword}'를 {n}번째로 찾을 수 없음")
-                                
+                        
                         except Exception as e:
                             print(f"행 {row['row_idx']} 처리 중 오류: {str(e)}")
-                            
+                
                 except Exception as e:
                     print(f"시트 '{sheet_name}' 처리 중 오류 발생: {str(e)}")
             
@@ -270,39 +268,27 @@ class DartReportUpdater:
             
             if update_data:
                 try:
-                    # 업데이트할 전체 범위 계산
+                    # 업데이트할 열의 데이터만 준비
+                    column_data = []
                     min_row = min(row for row, _ in update_data)
                     max_row = max(row for row, _ in update_data)
                     
-                    # 기존 데이터 가져오기 (빈 데이터 포함)
-                    existing_data = []
-                    try:
-                        current_data = archive.get_values(f'A{min_row}:A{max_row}')  # 최소한 A열은 가져옴
-                        for i in range(max_row - min_row + 1):
-                            if i < len(current_data):
-                                row_data = list(current_data[i])
-                            else:
-                                row_data = []
-                            while len(row_data) < last_col:
-                                row_data.append('')
-                            existing_data.append(row_data)
-                    except:
-                        # 데이터가 없는 경우 빈 데이터로 초기화
-                        existing_data = [['' for _ in range(last_col)] for _ in range(max_row - min_row + 1)]
+                    # 빈 데이터로 초기화
+                    for _ in range(max_row - min_row + 1):
+                        column_data.append([''])
                     
-                    # 업데이트할 데이터 적용
+                    # 업데이트할 데이터 삽입
                     for row, value in update_data:
                         adjusted_row = row - min_row
-                        if adjusted_row < len(existing_data):
-                            existing_data[adjusted_row][last_col - 1] = value
+                        column_data[adjusted_row] = [value]
                     
-                    # 데이터 업데이트
-                    range_label = f'A{min_row}:{chr(64+last_col)}{max_row}'
+                    # 단일 열 업데이트
+                    range_label = f'{target_col_letter}{min_row}:{target_col_letter}{max_row}'
                     print(f"업데이트 범위: {range_label}")
                     
                     archive.batch_update([{
                         'range': range_label,
-                        'values': existing_data
+                        'values': column_data
                     }])
                     print(f"데이터 업데이트 완료: {min_row}~{max_row} 행")
                     
@@ -315,9 +301,9 @@ class DartReportUpdater:
                     
                     meta_updates = [
                         {'range': 'J1', 'values': [[today.strftime('%Y-%m-%d')]]},
-                        {'range': f'{chr(64+last_col)}1', 'values': [['1']]},
-                        {'range': f'{chr(64+last_col)}5', 'values': [[today.strftime('%Y-%m-%d')]]},
-                        {'range': f'{chr(64+last_col)}6', 'values': [[quarter_text]]}
+                        {'range': f'{target_col_letter}1', 'values': [['1']]},
+                        {'range': f'{target_col_letter}5', 'values': [[today.strftime('%Y-%m-%d')]]},
+                        {'range': f'{target_col_letter}6', 'values': [[quarter_text]]}
                     ]
                     
                     archive.batch_update(meta_updates)
@@ -329,7 +315,7 @@ class DartReportUpdater:
                         f"• 분기: {quarter_text}\n"
                         f"• 업데이트 일시: {today.strftime('%Y-%m-%d %H:%M:%S')}\n"
                         f"• 처리된 행: {len(update_data)}개\n"
-                        f"• 시트 열 번호: {last_col}"
+                        f"• 시트 열: {target_col_letter} (#{last_col})"
                     )
                     self.send_telegram_message(message)
                     
@@ -344,6 +330,8 @@ class DartReportUpdater:
             print(error_msg)
             self.send_telegram_message(f"❌ {error_msg}")
             raise e
+
+
 
 def main():
     try:
