@@ -1,1 +1,2 @@
-7347495548:AAF_7Xy6VHhgNWnafV-_95reGY_CfVHLB_U
+7347495548:AAF_7Xy6VHhgNWnafV-_95reGY_CfVHLB_U :: MSIT_Watcher_bot
+:: Telco_news_bot
