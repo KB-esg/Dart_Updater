@@ -7,7 +7,7 @@ on:
   workflow_dispatch:      # 수동 실행 가능
 
 jobs:
-  update-LG_Hello-reports:
+  update-SK_Telecom-reports:
     runs-on: ubuntu-latest
     
     env:
