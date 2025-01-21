@@ -2,8 +2,8 @@ name: 21_SK telecom DART Update
 
 on:
   schedule:
-    - cron: '0 1 31 3 *'  # 3월 31일 오전 9시(UTC 0시)에 실행
-    - cron: '0 1 17 5,8,11 *'  # 5월, 8월, 11월 17일 오전 9시(UTC 0시)에 실행
+    - cron: '0 1 31 3 *'  # 3월 31일 오전 10시(UTC 0시)에 실행
+    - cron: '0 1 17 5,8,11 *'  # 5월, 8월, 11월 17일 오전 10시(UTC 0시)에 실행
   workflow_dispatch:      # 수동 실행 가능
 
 jobs:
