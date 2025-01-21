@@ -148,6 +148,7 @@ class DartReportUpdater:
         return re.sub(r'\s*\(.*?\)\s*', '', value).replace('%', '')
 
 
+class DartReportUpdater:
     def process_archive_data(self, archive, start_row, last_col):
         """아카이브 데이터 처리"""
         try:
@@ -155,7 +156,22 @@ class DartReportUpdater:
             all_rows = archive.get_all_values()
             update_data = []
             sheet_cache = {}
+
+            # 현재 시트의 크기 확인
+            current_cols = archive.col_count
+            print(f"현재 시트 열 수: {current_cols}")
             
+            # 필요한 경우 시트 크기 조정
+            if last_col >= current_cols:
+                new_cols = max(last_col + 5, current_cols + 10)  # 여유 있게 열 추가
+                try:
+                    print(f"시트 크기를 {current_cols}에서 {new_cols}로 조정합니다.")
+                    archive.resize(rows=archive.row_count, cols=new_cols)
+                    print("시트 크기 조정 완료")
+                except Exception as e:
+                    print(f"시트 크기 조정 중 오류 발생: {str(e)}")
+                    raise
+
             print(f"전체 행 수: {len(all_rows)}")
             
             sheet_rows = {}
@@ -248,21 +264,31 @@ class DartReportUpdater:
                     min_row = min(row for row, _ in update_data)
                     max_row = max(row for row, _ in update_data)
                     
+                    # 현재 데이터 가져오기 전에 필요한 열 수만큼 빈 열 추가
+                    range_end_col = chr(64 + last_col)
+                    print(f"데이터 범위: A{min_row}:{range_end_col}{max_row}")
+                    
                     # 현재 데이터 가져오기
-                    existing_data = archive.get_values(f'A{min_row}:Z{max_row}')
+                    existing_data = archive.get_values(f'A{min_row}:{range_end_col}{max_row}')
+                    
+                    # 데이터 행이 부족한 경우 빈 행 추가
+                    while len(existing_data) < (max_row - min_row + 1):
+                        existing_data.append([''] * last_col)
                     
                     # 업데이트할 데이터 준비
                     for row, value in update_data:
-                        # row는 1-based index이므로 조정 필요
                         adjusted_row = row - min_row
-                        if adjusted_row < len(existing_data):
-                            while len(existing_data[adjusted_row]) < last_col:
-                                existing_data[adjusted_row].append('')
-                            existing_data[adjusted_row][last_col - 1] = value
+                        # 행이 존재하는지 확인
+                        while len(existing_data) <= adjusted_row:
+                            existing_data.append([''] * last_col)
+                        # 열이 존재하는지 확인
+                        while len(existing_data[adjusted_row]) < last_col:
+                            existing_data[adjusted_row].append('')
+                        existing_data[adjusted_row][last_col - 1] = value
                     
                     # 일괄 업데이트
                     try:
-                        range_label = f'A{min_row}:{chr(64+last_col)}{max_row}'
+                        range_label = f'A{min_row}:{range_end_col}{max_row}'
                         archive.batch_update([{
                             'range': range_label,
                             'values': existing_data
@@ -298,7 +324,6 @@ class DartReportUpdater:
                         archive.batch_update(final_updates)
                         print(f"최종 업데이트 완료 (이전 분기: {quarter_text})")
                         
-                        # 텔레그램 메시지 전송
                         message = (
                             f"🔄 DART 업데이트 완료\n\n"
                             f"• 종목: {self.company_name} ({self.corp_code})\n"
