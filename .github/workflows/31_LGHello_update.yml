@@ -31,10 +31,8 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt || {
-            pip install gspread oauth2client google-auth google-auth-oauthlib google-auth-httplib2 
-            pip install opendartreader pandas beautifulsoup4 html_table_parser tqdm requests
-          }
+          pip install gspread oauth2client google-auth google-auth-oauthlib google-auth-httplib2 
+          pip install opendartreader pandas beautifulsoup4 html_table_parser tqdm requests
           
       - name: Verify environment variables
         run: |
