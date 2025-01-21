@@ -55,38 +55,4 @@ jobs:
           
       - name: Send Telegram notification
         if: always()
-        run: |
-          python -c "
-          import requests
-          import os
-          from datetime import datetime
-          
-          def send_telegram(status):
-              bot_token = os.environ['TELEGRAM_BOT_TOKEN']
-              chat_id = os.environ['TELEGRAM_CHANNEL_ID']
-              
-              if status == 'success':
-                  message = f'''✅ DART 업데이트 완료\n
-• 종목: LG헬로비전 (037560)
-• 실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-• GitHub Action 상태: 성공'''
-              else:
-                  message = f'''❌ DART 업데이트 실패\n
-• 종목: LG헬로비전 (037560)
-• 실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-• GitHub Action 상태: 실패\n
-GitHub Actions 로그를 확인해주세요.'''
-              
-              try:
-                  response = requests.post(
-                      f'https://api.telegram.org/bot{bot_token}/sendMessage',
-                      data={'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML'}
-                  )
-                  response.raise_for_status()
-                  print('Telegram notification sent successfully')
-              except Exception as e:
-                  print(f'Failed to send Telegram notification: {str(e)}')
-          
-          status = 'success' if '${{ steps.update-dart.outcome }}' == 'success' else 'failure'
-          send_telegram(status)
-          "
+        run: python send_telegram.py ${{ steps.update-dart.outcome }}
