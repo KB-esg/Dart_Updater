@@ -410,12 +410,17 @@ class DartReportUpdater:
         :param spreadsheet_id_var: 스프레드시트 환경변수 이름 (예: 'SDS_SPREADSHEET_ID')
         :param company_name: 회사명 (예: '삼성에스디에스')
         """
+        
+        # Logger 초기화 추가
+        self.logger = logging.getLogger('dart.updater')
+            
+        # DartConfig 초기화
+        self.config = DartConfig()
+
         self.corp_code = corp_code
         self.company_name = company_name
         self.spreadsheet_id_var = spreadsheet_id_var
 
-        # Logger 초기화 추가
-        self.logger = logging.getLogger('dart.updater')
     
         print("환경변수 확인:")
         print("DART_API_KEY 존재:", 'DART_API_KEY' in os.environ)
@@ -494,12 +499,12 @@ class DartReportUpdater:
         try:
             report_index = self.dart.sub_docs(rcept_no)
             target_docs = report_index[
-                report_index['title'].isin(self.config.target_sheets)
+                report_index['title'].isin(DartConfig().target_sheets)  # config 인스턴스 직접 생성
             ]
-            
+        
             for _, doc in target_docs.iterrows():
                 self.update_worksheet(doc['title'], doc['url'])
-                
+            
         except Exception as e:
             self.logger.error(f"Failed to process report {rcept_no}: {str(e)}")
             raise DartUpdateError(f"Report processing failed: {str(e)}")
