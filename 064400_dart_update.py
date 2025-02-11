@@ -403,43 +403,41 @@ class SheetManager:
 class DartReportUpdater:
     """DART 보고서 업데이트 클래스"""
     
-    def __init__(self, corp_code: str, spreadsheet_id: str, company_name: str):
+    def __init__(self, corp_code, spreadsheet_id_var, company_name):
         """
-        Args:
-            corp_code: 종목 코드
-            spreadsheet_id: 스프레드시트 ID
-            company_name: 회사명
+        초기화
+        :param corp_code: 종목 코드 (예: '018260')
+        :param spreadsheet_id_var: 스프레드시트 환경변수 이름 (예: 'SDS_SPREADSHEET_ID')
+        :param company_name: 회사명 (예: '삼성에스디에스')
         """
-        self.config = DartConfig()
-        self.config.validate_environment()
-        
         self.corp_code = corp_code
         self.company_name = company_name
-        self.spreadsheet_var_name = spreadsheet_var_name
+        self.spreadsheet_id_var = spreadsheet_id_var
         
-        # 인증 설정
-        self.credentials = self._get_credentials()
+        print("환경변수 확인:")
+        print("DART_API_KEY 존재:", 'DART_API_KEY' in os.environ)
+        print("GOOGLE_CREDENTIALS 존재:", 'GOOGLE_CREDENTIALS' in os.environ)
+        print(f"{spreadsheet_id_var} 존재:", spreadsheet_id_var in os.environ)
+        print("TELEGRAM_BOT_TOKEN 존재:", 'TELEGRAM_BOT_TOKEN' in os.environ)
+        print("TELEGRAM_CHANNEL_ID 존재:", 'TELEGRAM_CHANNEL_ID' in os.environ)
+        
+        if spreadsheet_id_var not in os.environ:
+            raise ValueError(f"{spreadsheet_id_var} 환경변수가 설정되지 않았습니다.")
+            
+        # Google Sheets 초기화
+        self.credentials = self.get_credentials()
         self.gc = gspread.authorize(self.credentials)
-        self.workbook = self.gc.open_by_key(os.environ[spreadsheet_var_name])
-
-
+        self.workbook = self.gc.open_by_key(os.environ[spreadsheet_id_var])
+        
         # SheetManager 초기화
         self.sheet_manager = SheetManager(self.workbook)
         
         # DART API 초기화
         self.dart = OpenDartReader(os.environ['DART_API_KEY'])
         
-        # 알림 시스템 설정
-        self.notification = NotificationSystem(
-            os.environ['TELEGRAM_BOT_TOKEN'],
-            os.environ['TELEGRAM_CHANNEL_ID']
-        )
-        
-        # 로거 설정
-        self.logger = DartLogger(
-            'dart.updater',
-            f'dart_update_{company_name}_{datetime.now():%Y%m%d}.log'
-        ).logger
+        # Telegram 설정
+        self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+        self.telegram_channel_id = os.environ.get('TELEGRAM_CHANNEL_ID')
     
     def _get_credentials(self) -> Credentials:
         """Google 인증 정보 설정"""
@@ -725,12 +723,12 @@ class DartReportUpdater:
         self.notification.send_notification(message)
 
 def main():
-    import sys  # sys 모듈 임포트 추가
+    import sys
     
     try:
         def log(msg):
             print(msg)
-            sys.stdout.flush()  # 즉시 출력 보장
+            sys.stdout.flush()
         
         COMPANY_INFO = {
             'code': '00139834',
@@ -743,7 +741,7 @@ def main():
         try:
             updater = DartReportUpdater(
                 corp_code=COMPANY_INFO['code'],
-                spreadsheet_var_name=COMPANY_INFO['spreadsheet_var'],  # 수정된 부분
+                spreadsheet_id_var=COMPANY_INFO['spreadsheet_var'],  # 매개변수 이름 수정
                 company_name=COMPANY_INFO['name']
             )
             
