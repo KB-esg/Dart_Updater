@@ -412,31 +412,105 @@ class DartReportUpdater:
             url: 문서 URL
         """
         try:
+            # 1. 워크시트 존재 확인 및 생성
+            try:
+                worksheet = self.workbook.worksheet(sheet_name)
+            except gspread.exceptions.WorksheetNotFound:
+                worksheet = self.workbook.add_worksheet(sheet_name, 1000, 26)  # 초기 크기
+                
+            # 2. HTML 내용 가져오기
             response = requests.get(url)
-            response.raise_for_status()
+            if response.status_code != 200:
+                raise DartUpdateError(f"Failed to fetch URL: {url}")
+                
+            # 3. HTML 파싱
+            soup = BeautifulSoup(response.text, 'html.parser')
+            tables = soup.find_all("table")
+            all_data = []
             
-            # HTML 테이블 파싱
-            html_content = response.text
-            processed_data = DataProcessor.parse_html_tables(html_content)
+            for table in tables:
+                table_data = parser.make2d(table)
+                if table_data:
+                    all_data.extend(table_data)
+
+            if not all_data:
+                return  # 데이터가 없으면 종료
+
+            # 4. 데이터 크기 계산
+            total_rows = len(all_data)
+            total_cols = max(len(row) for row in all_data)
             
-            if not processed_data:
-                self.logger.warning(f"No data found in {sheet_name}")
-                return
+            # 5. 필요한 경우 시트 크기 조정
+            current_rows = worksheet.row_count
+            current_cols = worksheet.col_count
             
-            # 데이터 정제
-            df = pd.DataFrame(processed_data)
-            df = DataProcessor.clean_dataframe(df)
+            need_resize = False
+            new_rows = max(current_rows, total_rows + 100)  # 여유 공간 확보
+            new_cols = max(current_cols, total_cols + 5)    # 여유 열 확보
             
-            # 시트 업데이트
-            self.sheet_manager.update_sheet(sheet_name, df.values.tolist())
-            self.logger.info(f"Updated worksheet: {sheet_name}")
+            if new_rows > current_rows or new_cols > current_cols:
+                try:
+                    worksheet.resize(rows=new_rows, cols=new_cols)
+                    time.sleep(2)  # API 제한 고려
+                    print(f"시트 크기 조정됨: {new_rows}행 x {new_cols}열")
+                    need_resize = True
+                except Exception as e:
+                    print(f"시트 크기 조정 실패: {str(e)}")
+                    # 실패해도 계속 진행 (가능한 만큼만 업데이트)
+
+            # 6. 배치 단위로 데이터 업데이트
+            BATCH_SIZE = 100  # 한 번에 처리할 행 수
             
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Failed to fetch URL {url}: {str(e)}")
-            raise DartUpdateError(f"URL fetch failed: {str(e)}")
+            for i in range(0, len(all_data), BATCH_SIZE):
+                batch = all_data[i:i + BATCH_SIZE]
+                end_idx = min(i + BATCH_SIZE, len(all_data))
+                
+                try:
+                    # 범위 지정
+                    range_str = f'A{i+1}:{self.get_column_letter(len(batch[0]))}{end_idx}'
+                    
+                    # 업데이트 시도
+                    worksheet.batch_update([{
+                        'range': range_str,
+                        'values': batch
+                    }])
+                    
+                    print(f"Updated rows {i+1} to {end_idx}")
+                    
+                    # API 제한 고려
+                    if (i + BATCH_SIZE) % 500 == 0:
+                        time.sleep(2)
+                    
+                except gspread.exceptions.APIError as e:
+                    if 'exceeds grid limits' in str(e):
+                        # 시트 크기를 다시 조정하고 재시도
+                        if not need_resize:  # 아직 resize하지 않은 경우에만
+                            try:
+                                worksheet.resize(rows=end_idx + 100, cols=new_cols)
+                                time.sleep(2)
+                                worksheet.batch_update([{
+                                    'range': range_str,
+                                    'values': batch
+                                }])
+                                continue
+                            except Exception as resize_error:
+                                raise SheetUpdateError(f"Failed to resize and update: {str(resize_error)}")
+                    raise SheetUpdateError(f"Failed to update batch: {str(e)}")
+                
+                except Exception as e:
+                    if 'Quota exceeded' in str(e):
+                        print("API 할당량 초과. 60초 대기 후 재시도...")
+                        time.sleep(60)
+                        worksheet.batch_update([{
+                            'range': range_str,
+                            'values': batch
+                        }])
+                    else:
+                        raise SheetUpdateError(f"Failed to update batch: {str(e)}")
+
         except Exception as e:
-            self.logger.error(f"Failed to update worksheet {sheet_name}: {str(e)}")
             raise SheetUpdateError(f"Worksheet update failed: {str(e)}")
+
     
     def process_archive_data(self, archive_sheet_name: str = 'Dart_Archive', 
                            start_row: int = 6) -> None:
