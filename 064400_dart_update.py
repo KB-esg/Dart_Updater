@@ -353,8 +353,9 @@ class SheetManager:
                 end_idx = min(i + BATCH_SIZE, len(all_data))
                 
                 try:
-                    # 범위 지정
-                    range_str = f'A{i+1}:{self._get_column_letter(len(batch[0]))}{end_idx}'
+                    # 범위 지정을 수정 - A열에서 데이터 크기에 맞는 열까지 포함
+                    last_col_letter = self._get_column_letter(max(len(row) for row in batch))
+                    range_str = f'A{i+1}:{last_col_letter}{end_idx}'
                     
                     # 업데이트 시도
                     worksheet.batch_update([{
@@ -367,7 +368,7 @@ class SheetManager:
                     # API 제한 고려
                     if (i + BATCH_SIZE) % 500 == 0:
                         time.sleep(2)
-                    
+        
                 except gspread.exceptions.APIError as e:
                     if 'exceeds grid limits' in str(e):
                         if not need_resize:
@@ -396,6 +397,7 @@ class SheetManager:
 
         except Exception as e:
             raise SheetUpdateError(f"Worksheet update failed: {str(e)}")
+              
 
 
 
