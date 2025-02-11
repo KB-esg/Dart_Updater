@@ -500,7 +500,7 @@ class DartReportUpdater:
             self.logger.error(f"Failed to process report {rcept_no}: {str(e)}")
             raise DartUpdateError(f"Report processing failed: {str(e)}")
     
-    def update_worksheet(self, sheet_name, url) 
+    def update_worksheet(self, sheet_name, url):
         """워크시트 업데이트"""
         try:
             # HTML 내용 가져오기
