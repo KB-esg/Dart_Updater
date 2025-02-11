@@ -722,6 +722,27 @@ class DartReportUpdater:
         
         self.notification.send_notification(message)
 
+
+    def send_telegram_message(self, message):
+        """텔레그램으로 메시지 전송"""
+        if not self.telegram_bot_token or not self.telegram_channel_id:
+            print("텔레그램 설정이 없습니다.")
+            return
+        
+        try:
+            url = f"https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage"
+            data = {
+                "chat_id": self.telegram_channel_id,
+                "text": message,
+                "parse_mode": "HTML"
+            }
+            response = requests.post(url, data=data)
+            response.raise_for_status()
+            print("텔레그램 메시지 전송 완료")
+        except Exception as e:
+            print(f"텔레그램 메시지 전송 실패: {str(e)}")
+
+
 def main():
     import sys
     
