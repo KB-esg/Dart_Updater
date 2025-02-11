@@ -354,7 +354,7 @@ class SheetManager:
                 
                 try:
                     # 범위 지정
-                    range_str = f'A{i+1}:{self.get_column_letter(len(batch[0]))}{end_idx}'
+                    range_str = f'A{i+1}:{self._get_column_letter(len(batch[0]))}{end_idx}'
                     
                     # 업데이트 시도
                     worksheet.batch_update([{
