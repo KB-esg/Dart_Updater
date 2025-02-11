@@ -725,40 +725,71 @@ class DartReportUpdater:
         self.notification.send_notification(message)
 
 def main():
-    """메인 실행 함수"""
-    logger = logging.getLogger('dart.main')
+    import sys  # sys 모듈 임포트 추가
     
     try:
+        def log(msg):
+            print(msg)
+            sys.stdout.flush()  # 즉시 출력 보장
+        
         COMPANY_INFO = {
             'code': '00139834',
             'name': '엘지씨엔에스',
-            'spreadsheet_id': os.environ['LGCNS_SPREADSHEET_ID']
+            'spreadsheet_var': 'LGCNS_SPREADSHEET_ID'
         }
         
-        logger.info(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
+        log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 보고서 업데이트 시작")
         
-        updater = DartReportUpdater(
-            COMPANY_INFO['code'],
-            COMPANY_INFO['spreadsheet_id'],
-            COMPANY_INFO['name']
-        )
-        
-        # DART 보고서 업데이트
-        updater.update_dart_reports()
-        logger.info("보고서 시트 업데이트 완료")
-        
-        # 아카이브 시트 업데이트
-        logger.info("Dart_Archive 시트 업데이트 시작")
-        updater.process_archive_data()
-        logger.info("Dart_Archive 시트 업데이트 완료")
-        
+        try:
+            updater = DartReportUpdater(
+                corp_code=COMPANY_INFO['code'],
+                spreadsheet_var_name=COMPANY_INFO['spreadsheet_var'],  # 수정된 부분
+                company_name=COMPANY_INFO['name']
+            )
+            
+            updater.update_dart_reports()
+            log("보고서 시트 업데이트 완료")
+            
+            log("Dart_Archive 시트 업데이트 시작")
+            archive = updater.workbook.worksheet('Dart_Archive')
+            log("Archive 시트 접근 성공")
+            
+            sheet_values = archive.get_all_values()
+            if not sheet_values:
+                raise ValueError("Dart_Archive 시트가 비어있습니다")
+            
+            last_col = len(sheet_values[0])
+            log(f"현재 마지막 열: {last_col}, 전체 행 수: {len(sheet_values)}")
+            
+            control_value = archive.cell(1, last_col).value
+            log(f"Control value: {control_value}")
+            
+            # 시작 행은 항상 10으로 설정
+            start_row = 6
+            
+            # control_value에 따라 열만 조정
+            if control_value:
+                last_col += 1
+            
+            log(f"처리 시작 행: {start_row}, 대상 열: {last_col}")
+            updater.process_archive_data(archive, start_row, last_col)
+            log("Dart_Archive 시트 업데이트 완료")
+            
+        except Exception as e:
+            log(f"처리 중 오류 발생: {str(e)}")
+            if 'updater' in locals():
+                updater.send_telegram_message(
+                    f"❌ DART 업데이트 실패\n\n"
+                    f"• 종목: {COMPANY_INFO['name']} ({COMPANY_INFO['code']})\n"
+                    f"• 오류: {str(e)}"
+                )
+            raise
+
     except Exception as e:
-        error_msg = f"전체 작업 중 오류 발생: {str(e)}"
-        logger.error(error_msg)
-        logger.error(f"오류 상세 정보: {type(e).__name__}")
-        
+        log(f"전체 작업 중 오류 발생: {str(e)}")
+        log(f"오류 상세 정보: {type(e).__name__}")
         if 'updater' in locals():
-            updater.notification.send_notification(
+            updater.send_telegram_message(
                 f"❌ DART 업데이트 중 치명적 오류 발생\n\n"
                 f"• 종목: {COMPANY_INFO['name']} ({COMPANY_INFO['code']})\n"
                 f"• 오류: {str(e)}"
@@ -766,24 +797,8 @@ def main():
         raise e
 
 if __name__ == "__main__":
-    # 로깅 설정
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(
-                f'dart_update_{datetime.now():%Y%m%d}.log',
-                encoding='utf-8'
-            )
-        ]
-    )
-    
     try:
         main()
-    except KeyboardInterrupt:
-        logging.info("사용자에 의해 프로그램이 중단되었습니다.")
-        sys.exit(0)
     except Exception as e:
-        logging.error(f"프로그램 실행 중 오류 발생: {str(e)}")
+        import sys  # sys 모듈 임포트 추가
         sys.exit(1)
