@@ -430,7 +430,10 @@ class DartReportUpdater:
         self.workbook = self.gc.open_by_key(os.environ[spreadsheet_id_var])
         
         # SheetManager 초기화
-        self.sheet_manager = SheetManager(self.workbook)
+        self.sheet_manager = SheetManager(
+            credentials=self.credentials,
+            spreadsheet_id=os.environ[self.spreadsheet_id_var]
+        )
         
         # DART API 초기화
         self.dart = OpenDartReader(os.environ['DART_API_KEY'])
