@@ -425,7 +425,7 @@ class DartReportUpdater:
             raise ValueError(f"{spreadsheet_id_var} 환경변수가 설정되지 않았습니다.")
             
         # Google Sheets 초기화
-        self.credentials = self.get_credentials()
+        self.credentials = self._get_credentials()
         self.gc = gspread.authorize(self.credentials)
         self.workbook = self.gc.open_by_key(os.environ[spreadsheet_id_var])
         
