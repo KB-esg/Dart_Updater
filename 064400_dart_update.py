@@ -357,7 +357,7 @@ class DartReportUpdater:
     def get_recent_dates(self) -> tuple[str, str]:
         """최근 3개월 날짜 범위 계산"""
         end_date = datetime.now()
-        start_date = end_date - timedelta(days=90)
+        start_date = end_date - timedelta(days= 3600) # 3개월 = 90일
         return start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
     
     @rate_limit(calls=100, period=60)
