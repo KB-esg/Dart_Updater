@@ -52,7 +52,19 @@ class XBRLDartReportUpdater:
         required_vars = ['DART_API_KEY', 'GOOGLE_CREDENTIALS', spreadsheet_var_name, 
                         'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHANNEL_ID']
         for var in required_vars:
-            print(f"{var} 존재:", var in os.environ)
+            if var in os.environ:
+                value = os.environ[var]
+                if len(value) > 4:
+                    # 보안을 위해 마지막 2자리를 **로 가리고, 너무 긴 값은 중간도 가림
+                    if len(value) > 20:
+                        masked_value = value[:6] + '...' + value[-4:-2] + '**'
+                    else:
+                        masked_value = value[:-2] + '**'
+                    print(f"✅ {var}: {masked_value} (길이: {len(value)})")
+                else:
+                    print(f"⚠️ {var}: 값이 너무 짧음 (길이: {len(value)})")
+            else:
+                print(f"❌ {var}: 설정되지 않음")
         
         if spreadsheet_var_name not in os.environ:
             raise ValueError(f"{spreadsheet_var_name} 환경변수가 설정되지 않았습니다.")
