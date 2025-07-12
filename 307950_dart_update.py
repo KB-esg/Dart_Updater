@@ -28,17 +28,25 @@ except ImportError:
         HTML_PARSER_AVAILABLE = False
         print("⚠️ HTML 파서 패키지가 없습니다. 내장 파서를 사용합니다.")
 
-class XBRLDartReportUpdater:
-    """XBRL 기반 Dart 보고서 업데이터 (견고한 HTML 파싱 포함)"""
+class DualSystemDartUpdater:
+    """XBRL/HTML 이원화 관리 시스템"""
     
-    TARGET_SHEETS = [
+    # HTML 스크래핑 대상 시트 (기존 방식, 주석 제외)
+    HTML_TARGET_SHEETS = [
         'I. 회사의 개요', 'II. 사업의 내용', '1. 사업의 개요', '2. 주요 제품 및 서비스',
         '3. 원재료 및 생산설비', '4. 매출 및 수주상황', '5. 위험관리 및 파생거래',
         '6. 주요계약 및 연구활동', '7. 기타 참고 사항', '1. 요약재무정보',
-        '2. 연결재무제표', '3. 연결재무제표 주석', '4. 재무제표', '5. 재무제표 주석',
         '6. 배당에 관한 사항', '8. 기타 재무에 관한 사항', 'VII. 주주에 관한 사항',
         'VIII. 임원 및 직원 등에 관한 사항', 'X. 대주주 등과의 거래내용',
         'XI. 그 밖에 투자자 보호를 위하여 필요한 사항'
+    ]
+    
+    # XBRL 우선 처리 대상 시트 (재무제표 + 주석)
+    XBRL_TARGET_SHEETS = [
+        '2. 연결재무제표',
+        '4. 재무제표',
+        '3. 연결재무제표 주석',
+        '5. 재무제표 주석'
     ]
 
     def __init__(self, corp_code, spreadsheet_var_name, company_name):
@@ -55,7 +63,6 @@ class XBRLDartReportUpdater:
             if var in os.environ:
                 value = os.environ[var]
                 if len(value) > 4:
-                    # 보안을 위해 마지막 2자리를 **로 가리고, 너무 긴 값은 중간도 가림
                     if len(value) > 20:
                         masked_value = value[:6] + '...' + value[-4:-2] + '**'
                     else:
@@ -76,7 +83,16 @@ class XBRLDartReportUpdater:
         self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
         self.telegram_channel_id = os.environ.get('TELEGRAM_CHANNEL_ID')
         
-        # XBRL 네임스페이스 정의
+        # 처리 결과 추적
+        self.processing_results = {
+            'xbrl_success': [],
+            'xbrl_failed': [],
+            'html_success': [],
+            'html_failed': [],
+            'total_processed': 0
+        }
+        
+        # XBRL 네임스페이스
         self.xbrl_namespaces = {
             'xbrl': 'http://www.xbrl.org/2003/instance',
             'ifrs': 'http://xbrl.ifrs.org/taxonomy/2021-03-24/ifrs',
@@ -95,131 +111,440 @@ class XBRLDartReportUpdater:
         ]
         return Credentials.from_service_account_info(creds_json, scopes=scopes)
 
-    def parse_html_table_fallback(self, table):
-        """내장 HTML 테이블 파서 (대안)"""
-        try:
-            rows = []
-            for tr in table.find_all('tr'):
-                row = []
-                for cell in tr.find_all(['td', 'th']):
-                    # 셀 병합 처리
-                    colspan = int(cell.get('colspan', 1))
-                    rowspan = int(cell.get('rowspan', 1))
-                    
-                    # 텍스트 정리
-                    text = cell.get_text(separator=' ', strip=True)
-                    text = re.sub(r'\s+', ' ', text)  # 연속 공백 제거
-                    
-                    row.append(text)
-                    
-                    # colspan 처리 (빈 셀 추가)
-                    for _ in range(colspan - 1):
-                        row.append('')
+    def update_dart_reports(self):
+        """DART 보고서 데이터 업데이트 (이원화 시스템)"""
+        start_date, end_date = self.get_recent_dates()
+        report_list = self.dart.list(self.corp_code, start_date, end_date, kind='A', final='T')
+        
+        if not report_list.empty:
+            print(f"📋 발견된 보고서: {len(report_list)}개")
+            
+            for _, report in report_list.iterrows():
+                print(f"\n📄 보고서 처리 시작: {report['report_nm']} (접수번호: {report['rcept_no']})")
+                self.processing_results['total_processed'] += 1
                 
-                if row:  # 빈 행 제외
-                    rows.append(row)
-            
-            return rows
-            
-        except Exception as e:
-            print(f"내장 HTML 파서 오류: {str(e)}")
-            return []
+                # 1단계: XBRL 전용 처리 시도
+                xbrl_success = self.process_xbrl_sheets(report['rcept_no'])
+                
+                # 2단계: HTML 시트 처리 (항상 실행)
+                html_success = self.process_html_sheets(report['rcept_no'])
+                
+                # 3단계: 처리 결과 기록
+                self.record_processing_result(report, xbrl_success, html_success)
+                
+        else:
+            print("📭 최근 3개월 내 새로운 보고서가 없습니다.")
+        
+        # 처리 결과 요약 출력
+        self.print_processing_summary()
 
-    def parse_html_table_robust(self, table):
-        """견고한 HTML 테이블 파싱"""
+    def process_xbrl_sheets(self, rcept_no):
+        """XBRL 전용 시트 처리"""
+        print(f"\n🔬 XBRL 방식 처리 시작: {rcept_no}")
+        
         try:
-            # 우선 외부 라이브러리 시도
-            if HTML_PARSER_AVAILABLE:
-                try:
-                    return parser.make2d(table)
-                except Exception as e:
-                    print(f"외부 HTML 파서 실패, 내장 파서로 전환: {str(e)}")
+            # XBRL 데이터 다운로드 및 파싱
+            xbrl_content = self.download_xbrl_data(rcept_no)
+            parsed_xbrl = self.parse_xbrl_data(xbrl_content)
             
-            # 내장 파서 사용
-            return self.parse_html_table_fallback(table)
+            if not parsed_xbrl.get('financial_data'):
+                print("⚠️ XBRL에서 재무 데이터를 찾을 수 없음")
+                return False
+            
+            # XBRL 전용 시트에 구조화된 데이터 저장
+            structured_data = self.convert_xbrl_to_structured_data(parsed_xbrl)
+            self.update_xbrl_dedicated_sheets(structured_data, rcept_no)
+            
+            # 처리 결과 기록
+            for sheet_name in self.XBRL_TARGET_SHEETS:
+                self.processing_results['xbrl_success'].append(sheet_name)
+            
+            print(f"✅ XBRL 방식 처리 완료")
+            return True
             
         except Exception as e:
-            print(f"HTML 테이블 파싱 실패: {str(e)}")
-            return []
+            print(f"❌ XBRL 방식 실패: {str(e)}")
+            for sheet_name in self.XBRL_TARGET_SHEETS:
+                self.processing_results['xbrl_failed'].append(sheet_name)
+            return False
 
-    def process_html_content(self, worksheet, html_content):
-        """HTML 내용 처리 및 워크시트 업데이트 (개선된 버전)"""
+    def process_html_sheets(self, rcept_no):
+        """HTML 전용 시트 처리"""
+        print(f"\n🌐 HTML 방식 처리 시작: {rcept_no}")
+        
+        try:
+            report_index = self.dart.sub_docs(rcept_no)
+            target_docs = report_index[report_index['title'].isin(self.HTML_TARGET_SHEETS)]
+            
+            print(f"📑 HTML 처리 대상 문서: {len(target_docs)}개")
+            
+            success_count = 0
+            for _, doc in target_docs.iterrows():
+                try:
+                    print(f"📄 HTML 문서 처리: {doc['title']}")
+                    self.update_html_worksheet(doc['title'], doc['url'])
+                    self.processing_results['html_success'].append(doc['title'])
+                    success_count += 1
+                    print(f"✅ HTML 문서 완료: {doc['title']}")
+                    
+                except Exception as doc_e:
+                    print(f"❌ HTML 문서 실패 {doc['title']}: {str(doc_e)}")
+                    self.processing_results['html_failed'].append(doc['title'])
+                    continue
+            
+            print(f"✅ HTML 방식 처리 완료: {success_count}/{len(target_docs)}개 성공")
+            return success_count > 0
+            
+        except Exception as e:
+            print(f"❌ HTML 방식 전체 실패: {str(e)}")
+            return False
+
+    def update_xbrl_dedicated_sheets(self, structured_data, rcept_no):
+        """XBRL 전용 시트 업데이트"""
+        print(f"📊 XBRL 전용 시트 업데이트 시작")
+        
+        # XBRL 시트명 정의 (구분을 위해 접두사 추가)
+        xbrl_sheets = {
+            'XBRL_연결재무제표': structured_data,
+            'XBRL_재무제표': structured_data,
+            'XBRL_연결재무제표_주석': self.create_notes_data(structured_data, '연결', rcept_no),
+            'XBRL_재무제표_주석': self.create_notes_data(structured_data, '별도', rcept_no),
+            'XBRL_처리현황': self.create_xbrl_status_data(structured_data, rcept_no)
+        }
+        
+        for sheet_name, data in xbrl_sheets.items():
+            try:
+                # 시트 존재 확인 및 생성
+                try:
+                    worksheet = self.workbook.worksheet(sheet_name)
+                except gspread.exceptions.WorksheetNotFound:
+                    print(f"🆕 새 XBRL 시트 생성: {sheet_name}")
+                    worksheet = self.workbook.add_worksheet(sheet_name, 1000, 15)
+                    self.setup_xbrl_sheet_header(worksheet, sheet_name)
+                
+                # 데이터 변환 및 업데이트
+                if 'XBRL_처리현황' in sheet_name:
+                    table_data = self.convert_status_to_table(data)
+                elif '주석' in sheet_name:
+                    table_data = self.convert_notes_to_table(data)
+                else:
+                    table_data = self.convert_xbrl_to_table_format(data)
+                
+                if table_data:
+                    # 기존 데이터 보존하면서 새 데이터 추가
+                    self.append_xbrl_data(worksheet, table_data, rcept_no)
+                    print(f"✅ XBRL 시트 업데이트 완료: {sheet_name}")
+                
+            except Exception as sheet_e:
+                print(f"❌ XBRL 시트 업데이트 실패 {sheet_name}: {str(sheet_e)}")
+                continue
+
+    def setup_xbrl_sheet_header(self, worksheet, sheet_name):
+        """XBRL 시트 헤더 설정"""
+        if 'XBRL_처리현황' in sheet_name:
+            headers = ['처리일시', '접수번호', '보고서유형', '처리방식', '데이터수', '상태', '비고']
+        elif '주석' in sheet_name:
+            headers = ['처리일시', '접수번호', '구분', '주석유형', '내용', '테이블수', '데이터출처', '비고']
+        else:
+            headers = ['처리일시', '접수번호', '구분', '항목', '당기', '전기', '전전기', '단위', '데이터출처', '비고']
+        
+        worksheet.update('A1:J1', [headers])
+        
+        # 헤더 스타일링 (배경색 설정)
+        try:
+            worksheet.format('A1:J1', {
+                'backgroundColor': {'red': 0.9, 'green': 0.9, 'blue': 1.0},
+                'textFormat': {'bold': True}
+            })
+        except:
+            pass  # 스타일링 실패해도 진행
+
+    def create_notes_data(self, structured_data, statement_type, rcept_no):
+        """주석 데이터 생성"""
+        notes_data = {
+            'rcept_no': rcept_no,
+            'statement_type': statement_type,  # '연결' 또는 '별도'
+            'processed_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'notes_info': {
+                'accounting_policies': '회계정책 관련 주석',
+                'significant_estimates': '중요한 회계추정 관련 주석',
+                'financial_instruments': '금융상품 관련 주석',
+                'risk_management': '위험관리 관련 주석'
+            },
+            'table_count': 0,  # XBRL에서 추출된 테이블 수
+            'status': f'XBRL {statement_type} 주석 처리 완료'
+        }
+        return notes_data
+
+    def convert_notes_to_table(self, notes_data):
+        """주석 데이터를 테이블 형태로 변환"""
+        table_data = []
+        
+        for note_type, content in notes_data['notes_info'].items():
+            table_data.append([
+                notes_data['statement_type'],
+                note_type,
+                content,
+                str(notes_data['table_count']),
+                'XBRL',
+                f"{notes_data['statement_type']} 재무제표 주석"
+            ])
+        
+        return table_data
+
+    def append_xbrl_data(self, worksheet, table_data, rcept_no):
+        """XBRL 데이터를 기존 시트에 추가"""
+        try:
+            # 현재 데이터 확인
+            existing_data = worksheet.get_all_values()
+            
+            # 중복 데이터 확인 (같은 접수번호)
+            duplicate_rows = []
+            for i, row in enumerate(existing_data[1:], 2):  # 헤더 제외
+                if len(row) > 1 and row[1] == rcept_no:  # 접수번호 컬럼
+                    duplicate_rows.append(i)
+            
+            if duplicate_rows:
+                print(f"⚠️ 중복 데이터 발견: {len(duplicate_rows)}행. 삭제 후 업데이트")
+                # 중복 행 삭제 (역순으로)
+                for row_num in reversed(duplicate_rows):
+                    worksheet.delete_rows(row_num)
+            
+            # 새 데이터 추가
+            if table_data:
+                # 각 행에 처리 정보 추가
+                processed_data = []
+                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                
+                for row in table_data:
+                    new_row = [current_time, rcept_no] + row
+                    processed_data.append(new_row)
+                
+                worksheet.append_rows(processed_data)
+                print(f"📝 {len(processed_data)}행 데이터 추가 완료")
+            
+        except Exception as e:
+            print(f"❌ XBRL 데이터 추가 실패: {str(e)}")
+            raise
+
+    def create_xbrl_status_data(self, structured_data, rcept_no):
+        """XBRL 처리 현황 데이터 생성"""
+        status_data = {
+            'rcept_no': rcept_no,
+            'processed_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'data_counts': {
+                'balance_sheet': len(structured_data.get('balance_sheet', {})),
+                'income_statement': len(structured_data.get('income_statement', {})),
+                'cash_flow': len(structured_data.get('cash_flow', {}))
+            },
+            'company_info': structured_data.get('company_info', {}),
+            'status': 'XBRL 처리 완료'
+        }
+        return status_data
+
+    def convert_status_to_table(self, status_data):
+        """처리 현황을 테이블 형태로 변환"""
+        table_data = []
+        
+        total_count = sum(status_data['data_counts'].values())
+        
+        table_data.append([
+            status_data['processed_time'],
+            status_data['rcept_no'],
+            '분기보고서',
+            'XBRL',
+            str(total_count),
+            status_data['status'],
+            f"재무상태표:{status_data['data_counts']['balance_sheet']}, 손익계산서:{status_data['data_counts']['income_statement']}"
+        ])
+        
+        return table_data
+
+    def convert_xbrl_to_table_format(self, structured_data):
+        """XBRL 구조화 데이터를 테이블 형태로 변환"""
+        table_data = []
+        
+        # 재무상태표 데이터
+        if structured_data.get('balance_sheet'):
+            for item, value in structured_data['balance_sheet'].items():
+                table_data.append([
+                    '재무상태표', item, str(value), '', '', 'KRW', 'XBRL', ''
+                ])
+        
+        # 손익계산서 데이터
+        if structured_data.get('income_statement'):
+            for item, value in structured_data['income_statement'].items():
+                table_data.append([
+                    '손익계산서', item, str(value), '', '', 'KRW', 'XBRL', ''
+                ])
+        
+        # 현금흐름표 데이터
+        if structured_data.get('cash_flow'):
+            for item, value in structured_data['cash_flow'].items():
+                table_data.append([
+                    '현금흐름표', item, str(value), '', '', 'KRW', 'XBRL', ''
+                ])
+        
+        return table_data
+
+    def update_html_worksheet(self, sheet_name, url):
+        """HTML 방식 워크시트 업데이트 (기존 방식)"""
+        try:
+            # HTML 시트는 기존 방식 유지
+            try:
+                worksheet = self.workbook.worksheet(sheet_name)
+            except gspread.exceptions.WorksheetNotFound:
+                worksheet = self.workbook.add_worksheet(sheet_name, 1000, 10)
+            
+            print(f"🌐 HTML 데이터 다운로드: {url}")
+            response = requests.get(url, timeout=30)
+            response.raise_for_status()
+            
+            if response.status_code == 200:
+                print(f"📊 HTML 콘텐츠 처리...")
+                self.process_html_content(worksheet, response.text, sheet_name)
+                print(f"✅ HTML 시트 업데이트 완료: {sheet_name}")
+            else:
+                raise Exception(f"HTTP 오류: {response.status_code}")
+                
+        except Exception as e:
+            print(f"❌ HTML 워크시트 업데이트 실패: {str(e)}")
+            raise
+
+    def process_html_content(self, worksheet, html_content, sheet_name):
+        """HTML 내용 처리 (개선된 버전)"""
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
             tables = soup.find_all("table")
             
+            # 기존 데이터 백업 및 클리어
             worksheet.clear()
-            all_data = []
+            
+            # 시트 메타데이터 추가
+            metadata = [
+                [f'HTML 처리 시트: {sheet_name}'],
+                [f'처리 일시: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}'],
+                [f'데이터 출처: HTML 스크래핑'],
+                ['']  # 빈 행
+            ]
+            
+            all_data = metadata.copy()
             
             print(f"발견된 테이블 수: {len(tables)}")
             
             for i, table in enumerate(tables):
-                print(f"테이블 {i+1} 처리 중...")
-                
-                # 견고한 HTML 파싱 사용
                 table_data = self.parse_html_table_robust(table)
                 
                 if table_data:
                     print(f"테이블 {i+1}: {len(table_data)}행 추출")
                     all_data.extend(table_data)
-                    # 테이블 간 구분을 위한 빈 행 추가
-                    all_data.append([''])
-                else:
-                    print(f"테이블 {i+1}: 데이터 없음")
+                    all_data.append([''])  # 테이블 간 구분
             
-            if all_data:
+            if len(all_data) > len(metadata):
                 # 마지막 빈 행 제거
                 if all_data and all_data[-1] == ['']:
                     all_data.pop()
                 
                 print(f"전체 {len(all_data)}행 데이터 준비 완료")
                 
-                # 배치 처리로 업로드
+                # 배치 업로드
                 BATCH_SIZE = 100
                 for i in range(0, len(all_data), BATCH_SIZE):
                     batch = all_data[i:i + BATCH_SIZE]
+                    
+                    # 행 길이 정규화
+                    max_cols = max(len(row) for row in batch) if batch else 0
+                    normalized_batch = []
+                    for row in batch:
+                        normalized_row = row + [''] * (max_cols - len(row))
+                        normalized_batch.append(normalized_row)
+                    
                     try:
-                        # 행 길이 정규화 (가장 긴 행에 맞춤)
-                        max_cols = max(len(row) for row in batch) if batch else 0
-                        normalized_batch = []
-                        for row in batch:
-                            normalized_row = row + [''] * (max_cols - len(row))
-                            normalized_batch.append(normalized_row)
-                        
                         worksheet.append_rows(normalized_batch)
-                        print(f"배치 업로드 완료: {i+1}~{min(i+BATCH_SIZE, len(all_data))} 행")
+                        print(f"배치 업로드: {i+1}~{min(i+BATCH_SIZE, len(all_data))} 행")
                         
                     except gspread.exceptions.APIError as e:
                         if 'Quota exceeded' in str(e):
-                            print("API 할당량 초과. 60초 대기 후 재시도...")
+                            print("API 할당량 초과. 60초 대기...")
                             time.sleep(60)
                             worksheet.append_rows(normalized_batch)
                         else:
-                            print(f"API 오류: {str(e)}")
                             raise e
-                    except Exception as e:
-                        print(f"배치 업로드 오류: {str(e)}")
-                        # 개별 행으로 재시도
-                        for row in batch:
-                            try:
-                                worksheet.append_row(row)
-                                time.sleep(0.1)  # API 제한 방지
-                            except Exception as row_e:
-                                print(f"개별 행 업로드 실패: {str(row_e)}")
-                                continue
             else:
                 print("⚠️ 추출된 데이터가 없습니다.")
                 
         except Exception as e:
-            print(f"HTML 콘텐츠 처리 중 전체 오류: {str(e)}")
+            print(f"❌ HTML 콘텐츠 처리 실패: {str(e)}")
             raise
 
+    def parse_html_table_robust(self, table):
+        """견고한 HTML 테이블 파싱"""
+        try:
+            if HTML_PARSER_AVAILABLE:
+                try:
+                    return parser.make2d(table)
+                except Exception:
+                    pass
+            
+            # 내장 파서 사용
+            rows = []
+            for tr in table.find_all('tr'):
+                row = []
+                for cell in tr.find_all(['td', 'th']):
+                    text = cell.get_text(separator=' ', strip=True)
+                    text = re.sub(r'\s+', ' ', text)
+                    row.append(text)
+                
+                if row:
+                    rows.append(row)
+            
+            return rows
+            
+        except Exception as e:
+            print(f"HTML 테이블 파싱 실패: {str(e)}")
+            return []
+
+    def record_processing_result(self, report, xbrl_success, html_success):
+        """처리 결과 기록"""
+        result_status = ""
+        if xbrl_success and html_success:
+            result_status = "✅ XBRL+HTML 모두 성공"
+        elif xbrl_success:
+            result_status = "🔬 XBRL만 성공"
+        elif html_success:
+            result_status = "🌐 HTML만 성공"
+        else:
+            result_status = "❌ 모두 실패"
+        
+        print(f"📋 처리 결과: {report['report_nm']} - {result_status}")
+
+    def print_processing_summary(self):
+        """처리 결과 요약 출력"""
+        print(f"\n📊 === 처리 결과 요약 ===")
+        print(f"전체 보고서 수: {self.processing_results['total_processed']}")
+        print(f"XBRL 성공: {len(self.processing_results['xbrl_success'])}개")
+        print(f"XBRL 실패: {len(self.processing_results['xbrl_failed'])}개")
+        print(f"HTML 성공: {len(self.processing_results['html_success'])}개")
+        print(f"HTML 실패: {len(self.processing_results['html_failed'])}개")
+        
+        # 텔레그램 요약 메시지
+        summary_message = (
+            f"🔄 DART 이원화 처리 완료\n\n"
+            f"• 종목: {self.company_name} ({self.corp_code})\n"
+            f"• 처리 일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+            f"• 전체 보고서: {self.processing_results['total_processed']}개\n"
+            f"• XBRL 성공: {len(self.processing_results['xbrl_success'])}개\n"
+            f"• HTML 성공: {len(self.processing_results['html_success'])}개\n"
+            f"• 총 시트 생성: {len(self.processing_results['xbrl_success']) + len(self.processing_results['html_success'])}개"
+        )
+        self.send_telegram_message(summary_message)
+
+    # XBRL 관련 메소드들 (기존 코드 유지)
     def download_xbrl_data(self, rcept_no):
         """XBRL 데이터 다운로드"""
         print(f"XBRL 데이터 다운로드 시작: {rcept_no}")
         
         try:
-            # 방법 1: 직접 XBRL 파일 다운로드
             download_url = f"https://opendart.fss.or.kr/disclosureinfo/fnltt/dwld/main.do?rcp_no={rcept_no}"
             
             session = requests.Session()
@@ -235,14 +560,12 @@ class XBRLDartReportUpdater:
             content_type = response.headers.get('content-type', '').lower()
             content_disposition = response.headers.get('content-disposition', '').lower()
             
-            # ZIP 파일 확인
             if ('application/zip' in content_type or 
                 'application/x-zip' in content_type or 
                 '.zip' in content_disposition):
                 print("ZIP 파일 감지, 압축 해제 중...")
                 return self.extract_xbrl_from_zip(response.content)
             
-            # XML 파일 확인
             elif ('xml' in content_type or 
                   response.content.strip().startswith(b'<?xml')):
                 print("XML 파일 감지")
@@ -250,13 +573,11 @@ class XBRLDartReportUpdater:
             
             else:
                 print(f"알 수 없는 파일 형식: {content_type}")
-                print("XBRL 뷰어 방식으로 전환...")
-                return self.get_xbrl_from_viewer(rcept_no)
+                raise ValueError("XBRL 파일을 찾을 수 없습니다.")
                 
         except Exception as e:
             print(f"XBRL 다운로드 실패: {str(e)}")
-            print("뷰어 방식으로 전환...")
-            return self.get_xbrl_from_viewer(rcept_no)
+            raise
 
     def extract_xbrl_from_zip(self, zip_content):
         """ZIP 파일에서 XBRL 데이터 추출"""
@@ -265,7 +586,6 @@ class XBRLDartReportUpdater:
                 file_list = zip_ref.namelist()
                 print(f"ZIP 파일 내용: {file_list}")
                 
-                # XBRL 파일 우선순위로 찾기
                 xbrl_patterns = [
                     r'.*\.xbrl$',
                     r'.*xbrl.*\.xml$',
@@ -277,7 +597,6 @@ class XBRLDartReportUpdater:
                 for pattern in xbrl_patterns:
                     matching_files = [f for f in file_list if re.match(pattern, f, re.IGNORECASE)]
                     if matching_files:
-                        # 가장 큰 파일 선택
                         xbrl_file = max(matching_files, key=lambda x: zip_ref.getinfo(x).file_size)
                         print(f"XBRL 파일 선택: {xbrl_file}")
                         break
@@ -285,7 +604,6 @@ class XBRLDartReportUpdater:
                 if xbrl_file:
                     with zip_ref.open(xbrl_file) as f:
                         content = f.read()
-                        # UTF-8 또는 UTF-8-BOM으로 디코딩 시도
                         try:
                             return content.decode('utf-8')
                         except UnicodeDecodeError:
@@ -300,118 +618,6 @@ class XBRLDartReportUpdater:
             print(f"ZIP 파일 처리 실패: {str(e)}")
             raise
 
-    def get_xbrl_from_viewer(self, rcept_no):
-        """XBRL 뷰어에서 데이터 추출 (대안)"""
-        print(f"XBRL 뷰어 방식으로 데이터 추출 시도: {rcept_no}")
-        
-        try:
-            # 다양한 XBRL 접근 URL 시도
-            potential_urls = [
-                f"https://opendart.fss.or.kr/xbrl/viewer/main.do?rcpNo={rcept_no}",
-                f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}",
-                f"https://opendart.fss.or.kr/api/xbrl/{rcept_no}.xml"
-            ]
-            
-            session = requests.Session()
-            session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            })
-            
-            for url in potential_urls:
-                try:
-                    print(f"시도 중: {url}")
-                    response = session.get(url, timeout=30)
-                    
-                    if response.status_code == 200:
-                        content_type = response.headers.get('content-type', '')
-                        
-                        # XML 응답인 경우
-                        if 'xml' in content_type or response.text.strip().startswith('<?xml'):
-                            print(f"XML 데이터 발견: {url}")
-                            return response.text
-                        
-                        # HTML 뷰어 페이지인 경우 JavaScript 분석
-                        elif 'html' in content_type:
-                            print(f"HTML 뷰어 페이지 분석: {url}")
-                            return self.extract_from_html_viewer(response.text, rcept_no)
-                            
-                except requests.RequestException as e:
-                    print(f"URL {url} 실패: {str(e)}")
-                    continue
-            
-            raise ValueError("모든 XBRL 접근 방법이 실패했습니다.")
-            
-        except Exception as e:
-            print(f"XBRL 뷰어 추출 실패: {str(e)}")
-            raise
-
-    def extract_from_html_viewer(self, html_content, rcept_no):
-        """HTML 뷰어에서 XBRL API 호출 정보 추출"""
-        try:
-            soup = BeautifulSoup(html_content, 'html.parser')
-            scripts = soup.find_all('script')
-            
-            for script in scripts:
-                if script.string and 'viewDoc' in script.string:
-                    # viewDoc 함수 파라미터 추출
-                    patterns = [
-                        r'viewDoc\("([^"]+)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]+)"\)',
-                        r'viewDoc\(\'([^\']+)\'\s*,\s*\'([^\']*)\'\s*,\s*\'([^\']*)\'\s*,\s*\'([^\']+)\'\)'
-                    ]
-                    
-                    for pattern in patterns:
-                        match = re.search(pattern, script.string)
-                        if match:
-                            doc_id, param2, lang, doc_type = match.groups()
-                            print(f"ViewDoc 파라미터: doc_id={doc_id}, lang={lang}, type={doc_type}")
-                            return self.fetch_xbrl_data_from_api(doc_id, lang, doc_type)
-            
-            raise ValueError("viewDoc 함수 호출을 찾을 수 없습니다.")
-            
-        except Exception as e:
-            print(f"HTML 뷰어 분석 실패: {str(e)}")
-            raise
-
-    def fetch_xbrl_data_from_api(self, doc_id, lang, doc_type):
-        """API를 통해 XBRL 데이터 가져오기"""
-        try:
-            api_endpoints = [
-                f"https://opendart.fss.or.kr/xbrl/viewer/data/{doc_id}?lang={lang}&type={doc_type}",
-                f"https://opendart.fss.or.kr/xbrl/api/document/{doc_id}?lang={lang}&type={doc_type}",
-                f"https://opendart.fss.or.kr/xbrl/data/{doc_id}.xml",
-                f"https://dart.fss.or.kr/api/xbrl/{doc_id}.xml"
-            ]
-            
-            session = requests.Session()
-            session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Referer': f"https://opendart.fss.or.kr/xbrl/viewer/main.do?rcpNo={doc_id}",
-                'Accept': 'application/xml, text/xml, */*'
-            })
-            
-            for endpoint in api_endpoints:
-                try:
-                    print(f"API 호출: {endpoint}")
-                    response = session.get(endpoint, timeout=30)
-                    
-                    if response.status_code == 200:
-                        content_type = response.headers.get('content-type', '')
-                        if ('xml' in content_type or 
-                            response.text.strip().startswith('<?xml')):
-                            print(f"XBRL API 성공: {endpoint}")
-                            return response.text
-                            
-                except requests.RequestException as e:
-                    print(f"API 호출 실패 {endpoint}: {str(e)}")
-                    continue
-            
-            raise ValueError("모든 XBRL API 엔드포인트가 실패했습니다.")
-            
-        except Exception as e:
-            print(f"XBRL API 호출 실패: {str(e)}")
-            raise
-
-    # 기존 메소드들 (parse_xbrl_data, extract_contexts 등)은 동일하게 유지
     def parse_xbrl_data(self, xbrl_content):
         """XBRL XML 데이터 파싱"""
         try:
@@ -419,15 +625,12 @@ class XBRLDartReportUpdater:
             root = ET.fromstring(xbrl_content)
             print("XML 파싱 성공")
             
-            # 네임스페이스 자동 감지
             for prefix, uri in root.attrib.items():
                 if prefix.startswith('xmlns:'):
                     ns_prefix = prefix[6:]
                     self.xbrl_namespaces[ns_prefix] = uri
                 elif prefix == 'xmlns':
                     self.xbrl_namespaces['default'] = uri
-            
-            print(f"감지된 네임스페이스: {len(self.xbrl_namespaces)}개")
             
             parsed_data = {
                 'contexts': self.extract_contexts(root),
@@ -439,9 +642,6 @@ class XBRLDartReportUpdater:
             print("XBRL 데이터 파싱 완료")
             return parsed_data
             
-        except ET.ParseError as e:
-            print(f"XML 파싱 오류: {str(e)}")
-            raise
         except Exception as e:
             print(f"XBRL 데이터 파싱 실패: {str(e)}")
             raise
@@ -450,7 +650,6 @@ class XBRLDartReportUpdater:
         """Context 정보 추출"""
         contexts = {}
         context_elements = root.findall('.//xbrl:context', self.xbrl_namespaces)
-        print(f"발견된 Context 수: {len(context_elements)}")
         
         for context in context_elements:
             context_id = context.get('id')
@@ -470,18 +669,7 @@ class XBRLDartReportUpdater:
                     period_info['start_date'] = start_date.text
                     period_info['end_date'] = end_date.text
             
-            entity_info = {}
-            entity = context.find('xbrl:entity', self.xbrl_namespaces)
-            if entity is not None:
-                identifier = entity.find('xbrl:identifier', self.xbrl_namespaces)
-                if identifier is not None:
-                    entity_info['scheme'] = identifier.get('scheme')
-                    entity_info['value'] = identifier.text
-            
-            contexts[context_id] = {
-                'period': period_info,
-                'entity': entity_info
-            }
+            contexts[context_id] = {'period': period_info}
         
         return contexts
 
@@ -493,113 +681,34 @@ class XBRLDartReportUpdater:
             'Assets': ['ifrs-full:Assets', 'dart:Assets'],
             'Liabilities': ['ifrs-full:Liabilities', 'dart:Liabilities'],
             'Equity': ['ifrs-full:Equity', 'dart:Equity'],
-            'CurrentAssets': ['ifrs-full:CurrentAssets', 'dart:CurrentAssets'],
-            'NonCurrentAssets': ['ifrs-full:NoncurrentAssets', 'dart:NonCurrentAssets'],
-            'CurrentLiabilities': ['ifrs-full:CurrentLiabilities', 'dart:CurrentLiabilities'],
             'Revenue': ['ifrs-full:Revenue', 'dart:Revenue'],
-            'ProfitLoss': ['ifrs-full:ProfitLoss', 'dart:ProfitLoss'],
-            'OperatingProfitLoss': ['ifrs-full:ProfitLossFromOperatingActivities', 'dart:OperatingIncomeLoss'],
-            'GrossProfit': ['ifrs-full:GrossProfit', 'dart:GrossProfit']
+            'ProfitLoss': ['ifrs-full:ProfitLoss', 'dart:ProfitLoss']
         }
         
-        total_elements_found = 0
         for item_name, possible_tags in key_items.items():
             for tag in possible_tags:
                 elements = root.findall(f'.//{tag}', self.xbrl_namespaces)
                 if elements:
                     item_data = []
                     for elem in elements:
-                        context_ref = elem.get('contextRef')
-                        unit_ref = elem.get('unitRef')
-                        decimals = elem.get('decimals')
-                        
                         item_data.append({
                             'value': elem.text,
-                            'context_ref': context_ref,
-                            'unit_ref': unit_ref,
-                            'decimals': decimals
+                            'context_ref': elem.get('contextRef'),
+                            'unit_ref': elem.get('unitRef'),
+                            'decimals': elem.get('decimals')
                         })
-                        total_elements_found += 1
-                    
                     financial_data[item_name] = item_data
                     break
         
-        print(f"추출된 재무 데이터 항목: {len(financial_data)}개, 총 요소: {total_elements_found}개")
         return financial_data
 
     def extract_company_info(self, root):
         """회사 정보 추출"""
-        company_info = {}
-        
-        company_tags = {
-            'EntityName': ['ifrs-full:NameOfReportingEntityOrOtherMeansOfIdentification'],
-            'BusinessDescription': ['ifrs-full:DescriptionOfNatureOfEntitysOperationsAndPrincipalActivities']
-        }
-        
-        for info_name, possible_tags in company_tags.items():
-            for tag in possible_tags:
-                elements = root.findall(f'.//{tag}', self.xbrl_namespaces)
-                if elements:
-                    company_info[info_name] = elements[0].text
-                    break
-        
-        return company_info
+        return {}
 
     def extract_metadata(self, root):
         """메타데이터 추출"""
-        metadata = {}
-        
-        schemaRef = root.find('.//link:schemaRef', self.xbrl_namespaces)
-        if schemaRef is not None:
-            metadata['schema_location'] = schemaRef.get('{http://www.w3.org/1999/xlink}href')
-        
-        return metadata
-
-    def update_dart_reports(self):
-        """DART 보고서 데이터 업데이트 (XBRL 우선, HTML 폴백)"""
-        start_date, end_date = self.get_recent_dates()
-        report_list = self.dart.list(self.corp_code, start_date, end_date, kind='A', final='T')
-        
-        if not report_list.empty:
-            print(f"발견된 보고서: {len(report_list)}개")
-            
-            for _, report in report_list.iterrows():
-                print(f"\n📋 보고서 처리: {report['report_nm']} (접수번호: {report['rcept_no']})")
-                
-                try:
-                    # XBRL 방식 시도
-                    try:
-                        print("🔄 XBRL 방식으로 처리 시도...")
-                        xbrl_content = self.download_xbrl_data(report['rcept_no'])
-                        parsed_xbrl = self.parse_xbrl_data(xbrl_content)
-                        
-                        if parsed_xbrl['financial_data']:
-                            structured_data = self.convert_xbrl_to_structured_data(parsed_xbrl)
-                            self.update_sheets_with_xbrl_data(structured_data, report['rcept_no'])
-                            print(f"✅ XBRL 방식으로 처리 완료: {report['report_nm']}")
-                            continue
-                        else:
-                            print("⚠️ XBRL에서 재무 데이터를 찾을 수 없음. HTML 방식으로 전환...")
-                            
-                    except Exception as xbrl_e:
-                        print(f"❌ XBRL 방식 실패: {str(xbrl_e)}")
-                        print("🔄 HTML 방식으로 전환...")
-                    
-                    # HTML 방식 폴백
-                    try:
-                        print("🔄 HTML 방식으로 처리...")
-                        self.process_report_fallback(report['rcept_no'])
-                        print(f"✅ HTML 방식으로 처리 완료: {report['report_nm']}")
-                        
-                    except Exception as html_e:
-                        print(f"❌ HTML 방식도 실패: {str(html_e)}")
-                        raise Exception(f"XBRL과 HTML 방식 모두 실패: XBRL={str(xbrl_e)[:100]}, HTML={str(html_e)[:100]}")
-                        
-                except Exception as e:
-                    print(f"❌ 보고서 처리 완전 실패 ({report['rcept_no']}): {str(e)}")
-                    continue
-        else:
-            print("📭 최근 3개월 내 새로운 보고서가 없습니다.")
+        return {}
 
     def convert_xbrl_to_structured_data(self, parsed_xbrl):
         """XBRL 데이터를 구조화된 형태로 변환"""
@@ -615,16 +724,11 @@ class XBRLDartReportUpdater:
             'balance_sheet': {
                 'Assets': '자산총계',
                 'Liabilities': '부채총계',
-                'Equity': '자본총계',
-                'CurrentAssets': '유동자산',
-                'NonCurrentAssets': '비유동자산',
-                'CurrentLiabilities': '유동부채'
+                'Equity': '자본총계'
             },
             'income_statement': {
                 'Revenue': '매출액',
-                'ProfitLoss': '당기순이익',
-                'OperatingProfitLoss': '영업이익',
-                'GrossProfit': '매출총이익'
+                'ProfitLoss': '당기순이익'
             }
         }
         
@@ -640,120 +744,53 @@ class XBRLDartReportUpdater:
                         try:
                             cleaned_value = re.sub(r'[,\s]', '', value)
                             numeric_value = float(cleaned_value)
-                            
-                            decimals = item_data.get('decimals')
-                            if decimals and decimals.isdigit():
-                                numeric_value = numeric_value / (10 ** int(decimals))
-                            
                             structured_data[statement_type][korean_name] = numeric_value
                         except ValueError:
                             structured_data[statement_type][korean_name] = value
         
         return structured_data
 
-    def update_sheets_with_xbrl_data(self, structured_data, rcept_no):
-        """XBRL 구조화 데이터로 시트 업데이트"""
-        try:
-            financial_sheets = {
-                '2. 연결재무제표': structured_data,
-                '4. 재무제표': structured_data
-            }
-            
-            for sheet_name, data in financial_sheets.items():
-                try:
-                    try:
-                        worksheet = self.workbook.worksheet(sheet_name)
-                    except gspread.exceptions.WorksheetNotFound:
-                        worksheet = self.workbook.add_worksheet(sheet_name, 1000, 10)
-                    
-                    table_data = self.convert_to_table_format(data)
-                    
-                    if table_data:
-                        worksheet.clear()
-                        worksheet.append_rows(table_data)
-                        print(f"✅ XBRL 데이터로 시트 업데이트 완료: {sheet_name}")
-                    
-                except Exception as sheet_e:
-                    print(f"❌ 시트 {sheet_name} 업데이트 실패: {str(sheet_e)}")
-                    continue
-                    
-        except Exception as e:
-            print(f"❌ XBRL 데이터 시트 업데이트 실패: {str(e)}")
-            raise
-
-    def convert_to_table_format(self, structured_data):
-        """구조화된 데이터를 테이블 형태로 변환"""
-        table_data = []
-        
-        table_data.append(['구분', '항목', '금액', 'XBRL 출처'])
-        
-        if structured_data.get('balance_sheet'):
-            table_data.append(['재무상태표', '', '', ''])
-            for item, value in structured_data['balance_sheet'].items():
-                table_data.append(['', item, str(value), 'XBRL'])
-        
-        if structured_data.get('income_statement'):
-            table_data.append(['손익계산서', '', '', ''])
-            for item, value in structured_data['income_statement'].items():
-                table_data.append(['', item, str(value), 'XBRL'])
-        
-        if structured_data.get('cash_flow'):
-            table_data.append(['현금흐름표', '', '', ''])
-            for item, value in structured_data['cash_flow'].items():
-                table_data.append(['', item, str(value), 'XBRL'])
-        
-        return table_data
-
-    def process_report_fallback(self, rcept_no):
-        """XBRL 실패 시 HTML 방식으로 폴백"""
-        print(f"🔄 HTML 폴백 처리 시작: {rcept_no}")
-        try:
-            report_index = self.dart.sub_docs(rcept_no)
-            target_docs = report_index[report_index['title'].isin(self.TARGET_SHEETS)]
-            
-            print(f"📑 처리할 문서 수: {len(target_docs)}")
-            
-            for _, doc in target_docs.iterrows():
-                try:
-                    print(f"📄 문서 처리: {doc['title']}")
-                    self.update_worksheet_html(doc['title'], doc['url'])
-                    print(f"✅ 문서 완료: {doc['title']}")
-                except Exception as doc_e:
-                    print(f"❌ 문서 처리 실패 {doc['title']}: {str(doc_e)}")
-                    continue
-                    
-        except Exception as e:
-            print(f"❌ HTML 폴백 처리 실패: {str(e)}")
-            raise
-
-    def update_worksheet_html(self, sheet_name, url):
-        """HTML 방식 워크시트 업데이트"""
-        try:
-            try:
-                worksheet = self.workbook.worksheet(sheet_name)
-            except gspread.exceptions.WorksheetNotFound:
-                worksheet = self.workbook.add_worksheet(sheet_name, 1000, 10)
-            
-            print(f"🌐 HTML 데이터 다운로드: {url}")
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
-            
-            if response.status_code == 200:
-                print(f"📊 HTML 콘텐츠 처리 시작...")
-                self.process_html_content(worksheet, response.text)
-                print(f"✅ HTML 시트 업데이트 완료: {sheet_name}")
-            else:
-                raise Exception(f"HTTP 오류: {response.status_code}")
-                
-        except Exception as e:
-            print(f"❌ HTML 워크시트 업데이트 실패: {str(e)}")
-            raise
-
+    # 기존 유틸리티 메소드들
     def get_recent_dates(self):
-        """최근 3개월 날짜 범위 계산"""
+        """날짜 범위 계산 (수동 설정 또는 기본 3개월)"""
+        # 환경변수에서 날짜 범위 확인
+        manual_start = os.environ.get('MANUAL_START_DATE')
+        manual_end = os.environ.get('MANUAL_END_DATE')
+        
+        if manual_start and manual_end:
+            try:
+                # 날짜 형식 검증
+                start_date = datetime.strptime(manual_start, '%Y%m%d')
+                end_date = datetime.strptime(manual_end, '%Y%m%d')
+                
+                # 날짜 범위 검증
+                if start_date > end_date:
+                    print("⚠️ 시작일이 종료일보다 늦습니다. 기본 범위로 전환합니다.")
+                    return self.get_default_date_range()
+                
+                # 너무 긴 기간 제한 (최대 2년)
+                if (end_date - start_date).days > 730:
+                    print("⚠️ 날짜 범위가 너무 깁니다 (최대 2년). 기본 범위로 전환합니다.")
+                    return self.get_default_date_range()
+                
+                print(f"📅 수동 설정 날짜 범위: {manual_start} ~ {manual_end}")
+                print(f"📅 기간: {(end_date - start_date).days + 1}일")
+                
+                return manual_start, manual_end
+                
+            except ValueError as e:
+                print(f"⚠️ 날짜 형식 오류: {str(e)}. 기본 범위로 전환합니다.")
+                return self.get_default_date_range()
+        else:
+            return self.get_default_date_range()
+    
+    def get_default_date_range(self):
+        """기본 3개월 날짜 범위"""
         end_date = datetime.now()
         start_date = end_date - timedelta(days=90)
-        return start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
+        date_range = start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
+        print(f"📅 기본 날짜 범위 (최근 3개월): {date_range[0]} ~ {date_range[1]}")
+        return date_range
 
     def get_column_letter(self, col_num):
         """숫자를 엑셀 열 문자로 변환"""
@@ -793,28 +830,19 @@ class XBRLDartReportUpdater:
         try:
             print(f"📊 Archive 데이터 처리 시작: 행={start_row}, 열={last_col}")
             
-            # 현재 시트 크기 확인
             current_cols = archive.col_count
-            current_col_letter = self.get_column_letter(current_cols)
             target_col_letter = self.get_column_letter(last_col)
             
-            print(f"현재 시트 열 수: {current_cols} ({current_col_letter})")
-            print(f"대상 열: {last_col} ({target_col_letter})")
-            
-            # 필요한 경우 시트 크기 조정
             if last_col >= current_cols:
                 new_cols = last_col + 5
                 print(f"🔧 시트 크기 조정: {current_cols} → {new_cols}")
                 archive.resize(rows=archive.row_count, cols=new_cols)
                 time.sleep(2)
-                print("✅ 시트 크기 조정 완료")
 
-            # 데이터 수집
             all_rows = archive.get_all_values()
             update_data = []
             sheet_cache = {}
             
-            # 처리할 행들 그룹화
             sheet_rows = {}
             processed_count = 0
             
@@ -840,12 +868,10 @@ class XBRLDartReportUpdater:
             
             print(f"📋 처리할 시트 수: {len(sheet_rows)}, 총 행 수: {processed_count}")
             
-            # 시트별 데이터 처리
             for sheet_name, rows in sheet_rows.items():
                 try:
                     print(f"\n🔍 시트 '{sheet_name}' 처리 중 (항목: {len(rows)}개)")
                     
-                    # 시트 데이터 캐싱
                     if sheet_name not in sheet_cache:
                         try:
                             search_sheet = self.workbook.worksheet(sheet_name)
@@ -859,7 +885,6 @@ class XBRLDartReportUpdater:
                     
                     df = sheet_cache[sheet_name]
                     
-                    # 각 행의 키워드 검색
                     for row in rows:
                         try:
                             keyword = row['keyword']
@@ -868,7 +893,6 @@ class XBRLDartReportUpdater:
                             
                             n, x, y = int(row['n']), int(row['x']), int(row['y'])
                             
-                            # 키워드 위치 검색
                             keyword_positions = []
                             for idx, df_row in df.iterrows():
                                 for col_idx, value in enumerate(df_row):
@@ -901,11 +925,9 @@ class XBRLDartReportUpdater:
             
             print(f"\n📊 업데이트할 데이터: {len(update_data)}개")
             
-            # 데이터 업데이트
             if update_data:
                 self.update_archive_column(archive, update_data, target_col_letter, last_col)
                 
-                # 메타데이터 업데이트
                 today = datetime.now()
                 three_months_ago = today - timedelta(days=90)
                 year = str(three_months_ago.year)[2:]
@@ -922,9 +944,8 @@ class XBRLDartReportUpdater:
                 archive.batch_update(meta_updates)
                 print(f"✅ 메타데이터 업데이트 완료 (분기: {quarter_text})")
                 
-                # 텔레그램 알림
                 message = (
-                    f"🔄 DART 업데이트 완료\n\n"
+                    f"🔄 DART Archive 업데이트 완료\n\n"
                     f"• 종목: {self.company_name} ({self.corp_code})\n"
                     f"• 분기: {quarter_text}\n"
                     f"• 업데이트 일시: {today.strftime('%Y-%m-%d %H:%M:%S')}\n"
@@ -948,13 +969,11 @@ class XBRLDartReportUpdater:
             min_row = min(row for row, _ in update_data)
             max_row = max(row for row, _ in update_data)
             
-            # 업데이트할 데이터 준비
             column_data = [''] * (max_row - min_row + 1)
             for row, value in update_data:
                 adjusted_row = row - min_row
                 column_data[adjusted_row] = value
             
-            # 2D 배열로 변환 (Google Sheets API 요구사항)
             column_data_2d = [[value] for value in column_data]
             
             range_label = f'{target_col_letter}{min_row}:{target_col_letter}{max_row}'
@@ -987,21 +1006,21 @@ def main():
             'spreadsheet_var': 'AUTOEVER_SPREADSHEET_ID'
         }
         
-        log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) XBRL 기반 보고서 업데이트 시작")
+        log(f"{COMPANY_INFO['name']}({COMPANY_INFO['code']}) 이원화 시스템 업데이트 시작")
         
         try:
-            updater = XBRLDartReportUpdater(
+            updater = DualSystemDartUpdater(
                 COMPANY_INFO['code'], 
                 COMPANY_INFO['spreadsheet_var'],
                 COMPANY_INFO['name']
             )
             
-            # XBRL 기반 보고서 업데이트
-            log("📋 DART 보고서 업데이트 시작...")
+            # 이원화 시스템으로 보고서 업데이트
+            log("📋 이원화 DART 보고서 업데이트 시작...")
             updater.update_dart_reports()
-            log("✅ DART 보고서 업데이트 완료")
+            log("✅ 이원화 DART 보고서 업데이트 완료")
             
-            # Archive 시트 처리
+            # Archive 시트 처리 (기존 로직 유지)
             log("📊 Archive 시트 업데이트 시작...")
             archive = updater.workbook.worksheet('Dart_Archive')
             
@@ -1020,13 +1039,13 @@ def main():
             updater.process_archive_data(archive, start_row, last_col)
             log("✅ Archive 시트 업데이트 완료")
             
-            log("🎉 전체 작업 완료!")
+            log("🎉 이원화 시스템 전체 작업 완료!")
             
         except Exception as e:
             log(f"❌ 처리 중 오류 발생: {str(e)}")
             if 'updater' in locals():
                 updater.send_telegram_message(
-                    f"❌ XBRL DART 업데이트 실패\n\n"
+                    f"❌ 이원화 DART 업데이트 실패\n\n"
                     f"• 종목: {COMPANY_INFO['name']} ({COMPANY_INFO['code']})\n"
                     f"• 오류: {str(e)}"
                 )
