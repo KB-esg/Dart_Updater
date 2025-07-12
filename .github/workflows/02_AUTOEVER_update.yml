@@ -78,9 +78,9 @@ jobs:
           
           if [ "$DEBUG_MODE" = "true" ]; then
             echo "🔧 디버그 모드로 실행"
-            python -u 307950_dart_update_xbrl.py 2>&1 | tee logs/dart_update.log
+            python -u 307950_dart_update.py 2>&1 | tee logs/dart_update.log
           else
-            python 307950_dart_update_xbrl.py 2>&1 | tee logs/dart_update.log
+            python 307950_dart_update.py 2>&1 | tee logs/dart_update.log
           fi
           
           # 실행 결과 확인
