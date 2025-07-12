@@ -54,11 +54,25 @@ jobs:
           required_vars=("DART_API_KEY" "GOOGLE_CREDENTIALS" "AUTOEVER_SPREADSHEET_ID" "TELEGRAM_BOT_TOKEN" "TELEGRAM_CHANNEL_ID")
           
           for var in "${required_vars[@]}"; do
-            if [ -z "${!var}" ]; then
+            if [ -n "${!var}" ]; then
+              value="${!var}"
+              length=${#value}
+              
+              if [ $length -gt 4 ]; then
+                if [ $length -gt 20 ]; then
+                  # 긴 값: 처음 6자리 + ... + 마지막 4자리 중 앞 2자리 + **
+                  masked="${value:0:6}...${value: -4:-2}**"
+                else
+                  # 짧은 값: 마지막 2자리만 **로 가림
+                  masked="${value:0:-2}**"
+                fi
+                echo "✅ $var: $masked (길이: $length)"
+              else
+                echo "⚠️ $var: 값이 너무 짧음 (길이: $length)"
+              fi
+            else
               echo "❌ Error: $var is not set"
               exit 1
-            else
-              echo "✅ $var exists: true"
             fi
           done
           
