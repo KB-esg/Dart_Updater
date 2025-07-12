@@ -1,15 +1,14 @@
-name: 02_현대오토에버_DART Update
-
+name: 02_현대오토에버_DART Update (XBRL)
 on:
   schedule:
-    - cron: '15 0 31 3 *'        # 3월 31일 오전 11시(UTC 0시)
-    - cron: '15 0 17 5,8,11 *'   # 5월, 8월, 11월 17일 오전 11시(UTC 0시)
-  workflow_dispatch:             # 수동 실행 가능
+    - cron: '15 0 31 3 *'        # 3월 31일
+    - cron: '15 0 17 5,8,11 *'   # 5월, 8월, 11월 17일
+  workflow_dispatch:             # 수동 실행
 
 jobs:
   update-dart-reports:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45          # XBRL 처리 시간 고려하여 증가
     
     env:
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
@@ -17,7 +16,7 @@ jobs:
       AUTOEVER_SPREADSHEET_ID: ${{ secrets.AUTOEVER_SPREADSHEET_ID }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-
+      
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -45,7 +44,16 @@ jobs:
             fi
           done
           
-      - name: Run DART update script
+      - name: Run XBRL DART update script
         id: update-dart
-        run: python 307950_dart_update.py
+        run: python 307950_dart_update_xbrl.py  # 새로운 파일명
         continue-on-error: true
+        
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v3
+        with:
+          name: dart-update-logs
+          path: |
+            *.log
+            *.txt
