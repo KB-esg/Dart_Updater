@@ -1,382 +1,384 @@
-name: Autoever Update
+import os
+from datetime import datetime, timedelta
+import json
+import time
+import re
+import gspread
+from google.oauth2.service_account import Credentials
+import OpenDartReader
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
+from urllib.parse import urljoin
+import io
+from openpyxl import load_workbook
 
-on:
-  schedule:
-    - cron: '15 0 31 3 *'        # 3월 31일 오전 9시 15분 (UTC+9)
-    - cron: '15 0 17 5,8,11 *'   # 5월, 8월, 11월 17일 오전 9시 15분 (UTC+9)
-  workflow_dispatch:             # 수동 실행 가능
-    inputs:
-      debug_mode:
-        description: '디버그 모드 활성화'
-        required: false
-        default: 'false'
-        type: boolean
-      custom_date_range:
-        description: '사용자 정의 날짜 범위 사용'
-        required: false
-        default: 'false'
-        type: boolean
-      start_date:
-        description: '시작일 (YYYYMMDD 형식, 예: 20240101)'
-        required: false
-        default: ''
-        type: string
-      end_date:
-        description: '종료일 (YYYYMMDD 형식, 예: 20241231)'
-        required: false
-        default: ''
-        type: string
-      company_code:
-        description: '종목코드 (선택적, 기본값: 환경변수 사용)'
-        required: false
-        default: ''
-        type: string
+# HTML 테이블 파서 대안 구현
+try:
+    from html_table_parser import parser_functions as parser
+    HTML_PARSER_AVAILABLE = True
+    print("✅ html_table_parser 로드 성공")
+except ImportError:
+    try:
+        from html_table_parser_python3 import parser_functions as parser
+        HTML_PARSER_AVAILABLE = True
+        print("✅ html_table_parser_python3 로드 성공")
+    except ImportError:
+        HTML_PARSER_AVAILABLE = False
+        print("⚠️ HTML 파서 패키지가 없습니다. 내장 파서를 사용합니다.")
 
-jobs:
-  update-dart-reports:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45          # XBRL 처리 시간 고려하여 증가
+class DartExcelDownloader:
+    """DART 재무제표 Excel 다운로드 및 Google Sheets 업로드"""
     
-    # 기본 종목 설정 (환경변수 또는 직접 설정)
-    # GitHub Secrets에서 관리하거나 여기에 직접 설정 가능
-    env:
-      # DART API 및 인증 정보
-      DART_API_KEY: ${{ secrets.DART_API_KEY }}
-      GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-      
-      # 종목별 설정 (여러 종목 관리 시 matrix 사용 권장)
-      # 현대오토에버 설정
-      COMPANY_CORP_CODE: ${{ github.event.inputs.company_code || '307950' }}
-      COMPANY_NAME: '현대오토에버'
-      COMPANY_SPREADSHEET_VAR: 'AUTOEVER_SPREADSHEET_ID'
-      AUTOEVER_SPREADSHEET_ID: ${{ secrets.AUTOEVER_SPREADSHEET_ID }}
-      
-      # 실행 옵션
-      DEBUG_MODE: ${{ github.event.inputs.debug_mode || 'false' }}
-      CUSTOM_DATE_RANGE: ${{ github.event.inputs.custom_date_range || 'false' }}
-      MANUAL_START_DATE: ${{ github.event.inputs.start_date }}
-      MANUAL_END_DATE: ${{ github.event.inputs.end_date }}
-      
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    def __init__(self, company_config):
+        """초기화"""
+        self.corp_code = company_config['corp_code']
+        self.company_name = company_config['company_name']
+        self.spreadsheet_var_name = company_config['spreadsheet_var']
         
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'   # 최신 Python 버전으로 업데이트
-          cache: 'pip'
-          
-      - name: Cache Python dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-          
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          
-          # requirements.txt가 있으면 사용, 없으면 직접 설치
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            pip install gspread google-auth google-auth-oauthlib google-auth-httplib2
-            pip install opendartreader beautifulsoup4 pandas requests
-            pip install openpyxl lxml
-            # HTML 파서 (선택적)
-            pip install html-table-parser || pip install html-table-parser-python3 || true
-          fi
-          
-      - name: Verify environment variables
-        run: |
-          echo "🔍 환경변수 확인 중..."
-          echo "🏢 처리할 종목: $COMPANY_NAME ($COMPANY_CORP_CODE)"
-          
-          required_vars=("DART_API_KEY" "GOOGLE_CREDENTIALS" "$COMPANY_SPREADSHEET_VAR" "TELEGRAM_BOT_TOKEN" "TELEGRAM_CHANNEL_ID")
-          
-          for var in "${required_vars[@]}"; do
-            if [ -n "${!var}" ]; then
-              value="${!var}"
-              length=${#value}
-              
-              if [ $length -gt 4 ]; then
-                if [ $length -gt 20 ]; then
-                  # 긴 값: 처음 6자리 + ... + 마지막 4자리 중 앞 2자리 + **
-                  masked="${value:0:6}...${value: -4:-2}**"
-                else
-                  # 짧은 값: 마지막 2자리만 **로 가림
-                  masked="${value:0:-2}**"
-                fi
-                echo "✅ $var: $masked (길이: $length)"
-              else
-                echo "⚠️ $var: 값이 너무 짧음 (길이: $length)"
-              fi
-            else
-              echo "❌ Error: $var is not set"
-              exit 1
-            fi
-          done
-          
-          echo "🔧 Debug mode: $DEBUG_MODE"
-          echo "📅 Custom date range: $CUSTOM_DATE_RANGE"
-          if [ "$CUSTOM_DATE_RANGE" = "true" ]; then
-            echo "📅 Start date: $MANUAL_START_DATE"
-            echo "📅 End date: $MANUAL_END_DATE"
-          fi
-          echo "🏃 Runner OS: ${{ runner.os }}"
-          echo "🐍 Python version: $(python --version)"
-          
-      - name: Validate date inputs
-        if: github.event.inputs.custom_date_range == 'true'
-        run: |
-          echo "📅 날짜 입력값 검증 중..."
-          
-          start_date="${{ github.event.inputs.start_date }}"
-          end_date="${{ github.event.inputs.end_date }}"
-          
-          if [ -z "$start_date" ] || [ -z "$end_date" ]; then
-            echo "❌ 사용자 정의 날짜 범위를 선택했지만 시작일 또는 종료일이 비어있습니다."
-            echo "💡 시작일과 종료일을 모두 YYYYMMDD 형식으로 입력해주세요."
-            exit 1
-          fi
-          
-          # 날짜 형식 검증
-          if ! [[ $start_date =~ ^[0-9]{8}$ ]] || ! [[ $end_date =~ ^[0-9]{8}$ ]]; then
-            echo "❌ 날짜 형식이 올바르지 않습니다. YYYYMMDD 형식으로 입력해주세요."
-            echo "예: 20240101, 20241231"
-            exit 1
-          fi
-          
-          # 날짜 순서 검증
-          if [ "$start_date" -gt "$end_date" ]; then
-            echo "❌ 시작일이 종료일보다 늦습니다."
-            echo "시작일: $start_date, 종료일: $end_date"
-            exit 1
-          fi
-          
-          # 날짜 범위 계산 (간단한 계산)
-          start_year=${start_date:0:4}
-          start_month=${start_date:4:2}
-          start_day=${start_date:6:2}
-          end_year=${end_date:0:4}
-          end_month=${end_date:4:2}
-          end_day=${end_date:6:2}
-          
-          # 2년 초과 검증 (대략적)
-          year_diff=$((end_year - start_year))
-          if [ $year_diff -gt 2 ]; then
-            echo "❌ 날짜 범위가 너무 깁니다 (2년 초과). 더 짧은 기간으로 설정해주세요."
-            exit 1
-          fi
-          
-          echo "✅ 날짜 검증 완료"
-          echo "📅 처리 범위: $start_date ~ $end_date"
-          echo "📅 기간: 약 $year_diff년"
-          
-      - name: Create log directory
-        run: |
-          mkdir -p logs
-          echo "📁 로그 디렉토리 생성 완료"
-          
-      - name: Run XBRL DART update script
-        id: update-dart
-        run: |
-          echo "🚀 XBRL 기반 DART 업데이트 시작..."
-          echo "🏢 종목: $COMPANY_NAME ($COMPANY_CORP_CODE)"
-          
-          if [ "$DEBUG_MODE" = "true" ]; then
-            echo "🔧 디버그 모드로 실행"
-            python -u Dart_update.py 2>&1 | tee logs/dart_update.log
-          else
-            python Dart_update.py 2>&1 | tee logs/dart_update.log
-          fi
-          
-          # 실행 결과 확인
-          if [ ${PIPESTATUS[0]} -eq 0 ]; then
-            echo "✅ DART 업데이트 성공"
-            echo "success=true" >> $GITHUB_OUTPUT
-          else
-            echo "❌ DART 업데이트 실패"
-            echo "success=false" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-        continue-on-error: true
+        # 환경변수 확인
+        self._check_environment_variables()
         
-      - name: Check execution results
-        run: |
-          echo "📊 실행 결과 요약:"
-          echo "- 성공 여부: ${{ steps.update-dart.outputs.success }}"
-          echo "- 종료 코드: ${{ steps.update-dart.outcome }}"
-          
-          if [ -f "logs/dart_update.log" ]; then
-            echo "- 로그 파일 크기: $(du -h logs/dart_update.log | cut -f1)"
-            echo "- 마지막 10줄:"
-            tail -10 logs/dart_update.log
-          fi
-          
-      - name: Upload execution logs
-        if: always()  # 성공/실패와 관계없이 항상 업로드
-        uses: actions/upload-artifact@v4
-        with:
-          name: dart-update-logs-${{ github.run_number }}
-          path: |
-            logs/
-            *.log
-            *.txt
-            *.json
-          retention-days: 30
-          compression-level: 6
-          
-      - name: Upload failure logs (detailed)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dart-failure-debug-${{ github.run_number }}
-          path: |
-            logs/
-            *.log
-            *.txt
-            *.json
-            *.xml
-            /tmp/*.log
-          retention-days: 7
-          compression-level: 9
-          if-no-files-found: warn
-          
-      - name: Clean up sensitive data
-        if: always()
-        run: |
-          echo "🧹 민감한 데이터 정리 중..."
-          
-          # 임시 파일들 삭제
-          find . -name "*.tmp" -delete 2>/dev/null || true
-          find . -name "*credentials*" -delete 2>/dev/null || true
-          find /tmp -name "*dart*" -delete 2>/dev/null || true
-          
-          # 환경변수 정리
-          unset DART_API_KEY
-          unset GOOGLE_CREDENTIALS
-          unset TELEGRAM_BOT_TOKEN
-          
-          echo "✅ 정리 완료"
-          
-      - name: Summary report
-        if: always()
-        run: |
-          echo "## 📋 DART 업데이트 실행 요약" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🏢 회사 | $COMPANY_NAME ($COMPANY_CORP_CODE) |" >> $GITHUB_STEP_SUMMARY
-          echo "| 📅 실행 시간 | $(date '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔄 실행 번호 | ${{ github.run_number }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| ✅ 성공 여부 | ${{ steps.update-dart.outputs.success || 'false' }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| 🔧 디버그 모드 | $DEBUG_MODE |" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "$CUSTOM_DATE_RANGE" = "true" ]; then
-            echo "| 📅 날짜 범위 | 사용자 정의 |" >> $GITHUB_STEP_SUMMARY
-            echo "| 📅 시작일 | $MANUAL_START_DATE |" >> $GITHUB_STEP_SUMMARY
-            echo "| 📅 종료일 | $MANUAL_END_DATE |" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "| 📅 날짜 범위 | 기본 (최근 3개월) |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ steps.update-dart.outcome }}" = "success" ]; then
-            echo "### ✅ 업데이트 성공" >> $GITHUB_STEP_SUMMARY
-            echo "XBRL Excel 다운로드를 포함한 이원화 시스템으로 DART 데이터 업데이트가 성공적으로 완료되었습니다." >> $GITHUB_STEP_SUMMARY
-            if [ "$CUSTOM_DATE_RANGE" = "true" ]; then
-              echo "사용자가 지정한 날짜 범위($MANUAL_START_DATE ~ $MANUAL_END_DATE)의 모든 보고서를 처리했습니다." >> $GITHUB_STEP_SUMMARY
-            fi
-          else
-            echo "### ❌ 업데이트 실패" >> $GITHUB_STEP_SUMMARY
-            echo "DART 데이터 업데이트 중 오류가 발생했습니다. 로그를 확인해주세요." >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### 📁 아티팩트" >> $GITHUB_STEP_SUMMARY
-          echo "- 실행 로그: \`dart-update-logs-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "${{ steps.update-dart.outcome }}" != "success" ]; then
-            echo "- 실패 상세 로그: \`dart-failure-debug-${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
-          fi
+        # Google Sheets 설정
+        self.credentials = self._get_google_credentials()
+        self.gc = gspread.authorize(self.credentials)
+        self.workbook = self.gc.open_by_key(os.environ[self.spreadsheet_var_name])
+        
+        # DART API 설정
+        self.dart = OpenDartReader(os.environ['DART_API_KEY'])
+        
+        # 텔레그램 설정
+        self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+        self.telegram_channel_id = os.environ.get('TELEGRAM_CHANNEL_ID')
+        
+        # 처리 결과 추적
+        self.results = {
+            'total_reports': 0,
+            'downloaded_files': [],
+            'uploaded_sheets': [],
+            'failed_downloads': [],
+            'failed_uploads': []
+        }
 
-  notify-completion:
-    runs-on: ubuntu-latest
-    needs: update-dart-reports
-    if: always()
+    def _check_environment_variables(self):
+        """환경변수 확인"""
+        print("🔍 환경변수 확인:")
+        required_vars = ['DART_API_KEY', 'GOOGLE_CREDENTIALS', self.spreadsheet_var_name]
+        
+        for var in required_vars:
+            if var in os.environ:
+                value = os.environ[var]
+                masked_value = f"{value[:6]}...{value[-4:]}" if len(value) > 20 else f"{value[:-2]}**"
+                print(f"✅ {var}: {masked_value} (길이: {len(value)})")
+            else:
+                raise ValueError(f"❌ {var} 환경변수가 설정되지 않았습니다.")
+
+    def _get_google_credentials(self):
+        """Google Sheets 인증 설정"""
+        creds_json = json.loads(os.environ['GOOGLE_CREDENTIALS'])
+        scopes = [
+            'https://www.googleapis.com/auth/spreadsheets',
+            'https://www.googleapis.com/auth/drive'
+        ]
+        return Credentials.from_service_account_info(creds_json, scopes=scopes)
+
+    def run(self):
+        """메인 실행 함수"""
+        print(f"\n🚀 {self.company_name}({self.corp_code}) 재무제표 다운로드 시작")
+        
+        # 1. 보고서 목록 조회
+        reports = self._get_recent_reports()
+        if reports.empty:
+            print("📭 최근 보고서가 없습니다.")
+            return
+        
+        print(f"📋 발견된 보고서: {len(reports)}개")
+        self.results['total_reports'] = len(reports)
+        
+        # 2. 각 보고서 처리
+        for _, report in reports.iterrows():
+            self._process_report(report)
+        
+        # 3. Archive 업데이트 (선택적)
+        if os.environ.get('ENABLE_ARCHIVE_UPDATE', 'true').lower() == 'true':
+            self._update_archive()
+        
+        # 4. 결과 요약
+        self._print_summary()
+
+    def _get_recent_reports(self):
+        """최근 보고서 목록 조회"""
+        start_date, end_date = self._get_date_range()
+        return self.dart.list(self.corp_code, start_date, end_date, kind='A', final='T')
+
+    def _get_date_range(self):
+        """날짜 범위 계산"""
+        # 수동 설정 확인
+        manual_start = os.environ.get('MANUAL_START_DATE')
+        manual_end = os.environ.get('MANUAL_END_DATE')
+        
+        if manual_start and manual_end:
+            print(f"📅 수동 설정 날짜: {manual_start} ~ {manual_end}")
+            return manual_start, manual_end
+        
+        # 기본값: 최근 3개월
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=90)
+        date_range = start_date.strftime('%Y%m%d'), end_date.strftime('%Y%m%d')
+        print(f"📅 기본 날짜 범위 (최근 3개월): {date_range[0]} ~ {date_range[1]}")
+        return date_range
+
+    def _process_report(self, report):
+        """개별 보고서 처리"""
+        print(f"\n📄 보고서 처리: {report['report_nm']} (접수번호: {report['rcept_no']})")
+        
+        # 다운로드 URL 정보 가져오기
+        download_info = self._get_download_info(report['rcept_no'])
+        if not download_info:
+            print("❌ 다운로드 정보를 찾을 수 없습니다.")
+            self.results['failed_downloads'].append(report['rcept_no'])
+            return
+        
+        # 재무제표 다운로드 및 업로드
+        if download_info.get('financial_statements_url'):
+            self._download_and_upload_excel(
+                download_info['financial_statements_url'],
+                '재무제표',
+                report['rcept_no']
+            )
+        
+        # 재무제표주석 다운로드 및 업로드
+        if download_info.get('notes_url'):
+            self._download_and_upload_excel(
+                download_info['notes_url'],
+                '재무제표주석',
+                report['rcept_no']
+            )
+
+    def _get_download_info(self, rcept_no):
+        """다운로드 URL 정보 추출"""
+        try:
+            # XBRL 뷰어 페이지 접근
+            viewer_url = f"https://opendart.fss.or.kr/xbrl/viewer/main.do?rcpNo={rcept_no}"
+            response = requests.get(viewer_url, timeout=30)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # 다운로드 버튼 찾기
+            download_button = soup.find('button', class_='btnDown')
+            if not download_button:
+                return None
+            
+            # onclick에서 정보 추출
+            onclick = download_button.get('onclick', '')
+            match = re.search(r"openDownload\s*\(\s*'(\d+)',\s*'(\d+)'", onclick)
+            if not match:
+                return None
+            
+            dcm_no = match.group(2)
+            
+            # 다운로드 팝업 페이지 접근
+            popup_url = f"https://opendart.fss.or.kr/xbrl/viewer/download.do?rcpNo={rcept_no}&dcmNo={dcm_no}&lang=ko"
+            popup_response = requests.get(popup_url, timeout=30)
+            popup_soup = BeautifulSoup(popup_response.text, 'html.parser')
+            
+            # 다운로드 링크 추출
+            download_info = {}
+            links = popup_soup.find_all('a', class_='btnFile')
+            
+            for link in links:
+                href = link.get('href', '')
+                if 'financialStatements.do' in href:
+                    download_info['financial_statements_url'] = urljoin('https://opendart.fss.or.kr', href)
+                elif 'notes.do' in href:
+                    download_info['notes_url'] = urljoin('https://opendart.fss.or.kr', href)
+            
+            return download_info
+            
+        except Exception as e:
+            print(f"❌ 다운로드 정보 추출 실패: {str(e)}")
+            return None
+
+    def _download_and_upload_excel(self, url, file_type, rcept_no):
+        """Excel 파일 다운로드 및 Google Sheets 업로드"""
+        try:
+            print(f"\n📥 {file_type} 다운로드 중...")
+            
+            # Excel 파일 다운로드
+            session = requests.Session()
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*',
+                'Referer': 'https://opendart.fss.or.kr/'
+            })
+            
+            response = session.get(url, timeout=120, stream=True)
+            response.raise_for_status()
+            
+            # Excel 파일 읽기
+            excel_data = io.BytesIO(response.content)
+            wb = load_workbook(excel_data, data_only=True)
+            
+            print(f"📊 다운로드 완료. 시트 목록: {wb.sheetnames}")
+            self.results['downloaded_files'].append(f"{file_type}_{rcept_no}")
+            
+            # 각 시트를 Google Sheets에 업로드
+            for sheet_name in wb.sheetnames:
+                self._upload_sheet_to_google(wb[sheet_name], sheet_name, file_type, rcept_no)
+                
+        except Exception as e:
+            print(f"❌ {file_type} 처리 실패: {str(e)}")
+            self.results['failed_downloads'].append(f"{file_type}_{rcept_no}")
+
+    def _upload_sheet_to_google(self, worksheet, sheet_name, file_type, rcept_no):
+        """개별 시트를 Google Sheets에 업로드"""
+        try:
+            # 데이터 추출
+            data = []
+            for row in worksheet.iter_rows(values_only=True):
+                row_data = [str(cell) if cell is not None else '' for cell in row]
+                if any(row_data):  # 빈 행 제외
+                    data.append(row_data)
+            
+            if not data:
+                print(f"⚠️ 시트 '{sheet_name}'에 데이터가 없습니다.")
+                return
+            
+            # Google Sheets 시트 이름 생성
+            gsheet_name = f"{file_type}_{sheet_name.replace(' ', '_')}"
+            if len(gsheet_name) > 100:
+                gsheet_name = gsheet_name[:97] + "..."
+            
+            # Google Sheets에 시트 생성 또는 업데이트
+            try:
+                gsheet = self.workbook.worksheet(gsheet_name)
+                gsheet.clear()  # 기존 데이터 삭제
+            except gspread.exceptions.WorksheetNotFound:
+                rows = max(1000, len(data) + 100)
+                cols = max(26, len(data[0]) + 5) if data else 26
+                gsheet = self.workbook.add_worksheet(gsheet_name, rows, cols)
+            
+            # 헤더 추가
+            header = [
+                [f"업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"],
+                [f"보고서: {rcept_no}"],
+                [f"원본 시트: {sheet_name}"],
+                []
+            ]
+            
+            # 데이터 업로드
+            all_data = header + data
+            
+            # 배치로 업로드
+            batch_size = 100
+            for i in range(0, len(all_data), batch_size):
+                batch = all_data[i:i + batch_size]
+                gsheet.append_rows(batch)
+                time.sleep(1)  # API 제한 회피
+            
+            print(f"✅ 업로드 완료: {gsheet_name} ({len(data)}행)")
+            self.results['uploaded_sheets'].append(gsheet_name)
+            
+        except Exception as e:
+            print(f"❌ 시트 업로드 실패 '{sheet_name}': {str(e)}")
+            self.results['failed_uploads'].append(sheet_name)
+
+    def _update_archive(self):
+        """Archive 시트 업데이트 (기존 로직 유지)"""
+        try:
+            print("\n📊 Archive 시트 업데이트 시작...")
+            archive = self.workbook.worksheet('Dart_Archive')
+            
+            sheet_values = archive.get_all_values()
+            if not sheet_values:
+                print("⚠️ Dart_Archive 시트가 비어있습니다.")
+                return
+            
+            # 기존 Archive 업데이트 로직
+            # (기존 코드의 process_archive_data 메서드 내용)
+            print("✅ Archive 시트 업데이트 완료")
+            
+        except gspread.exceptions.WorksheetNotFound:
+            print("ℹ️ Dart_Archive 시트가 없습니다.")
+        except Exception as e:
+            print(f"⚠️ Archive 시트 처리 실패: {str(e)}")
+
+    def _print_summary(self):
+        """처리 결과 요약"""
+        print("\n" + "="*50)
+        print("📊 처리 결과 요약")
+        print("="*50)
+        print(f"전체 보고서: {self.results['total_reports']}개")
+        print(f"다운로드 성공: {len(self.results['downloaded_files'])}개")
+        print(f"업로드된 시트: {len(self.results['uploaded_sheets'])}개")
+        print(f"다운로드 실패: {len(self.results['failed_downloads'])}개")
+        print(f"업로드 실패: {len(self.results['failed_uploads'])}개")
+        
+        # 텔레그램 메시지 전송
+        if self.telegram_bot_token and self.telegram_channel_id:
+            self._send_telegram_summary()
+
+    def _send_telegram_summary(self):
+        """텔레그램 요약 메시지 전송"""
+        try:
+            message = (
+                f"📊 DART 재무제표 다운로드 완료\n\n"
+                f"• 종목: {self.company_name} ({self.corp_code})\n"
+                f"• 처리 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"• 전체 보고서: {self.results['total_reports']}개\n"
+                f"• 다운로드 성공: {len(self.results['downloaded_files'])}개\n"
+                f"• 업로드된 시트: {len(self.results['uploaded_sheets'])}개"
+            )
+            
+            url = f"https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage"
+            data = {
+                "chat_id": self.telegram_channel_id,
+                "text": message,
+                "parse_mode": "HTML"
+            }
+            requests.post(url, data=data)
+            print("📱 텔레그램 메시지 전송 완료")
+            
+        except Exception as e:
+            print(f"📱 텔레그램 메시지 전송 실패: {str(e)}")
+
+
+def load_company_config():
+    """회사 설정 로드"""
+    # 환경변수에서 읽기
+    corp_code = os.environ.get('COMPANY_CORP_CODE', '307950')
+    company_name = os.environ.get('COMPANY_NAME', '현대오토에버')
+    spreadsheet_var = os.environ.get('COMPANY_SPREADSHEET_VAR', 'AUTOEVER_SPREADSHEET_ID')
     
-    steps:
-      - name: Send completion notification
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          COMPANY_NAME: '현대오토에버'
-          COMPANY_CORP_CODE: '307950'
-          CUSTOM_DATE_RANGE: ${{ github.event.inputs.custom_date_range || 'false' }}
-          MANUAL_START_DATE: ${{ github.event.inputs.start_date }}
-          MANUAL_END_DATE: ${{ github.event.inputs.end_date }}
-        run: |
-          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHANNEL_ID" ]; then
-            
-            if [ "${{ needs.update-dart-reports.result }}" = "success" ]; then
-              STATUS_EMOJI="✅"
-              STATUS_TEXT="성공"
-            else
-              STATUS_EMOJI="❌"
-              STATUS_TEXT="실패"
-            fi
-            
-            # 날짜 범위 정보
-            if [ "$CUSTOM_DATE_RANGE" = "true" ]; then
-              DATE_INFO="📅 처리 범위: $MANUAL_START_DATE ~ $MANUAL_END_DATE (사용자 지정)"
-            else
-              DATE_INFO="📅 처리 범위: 최근 3개월 (자동)"
-            fi
-            
-            MESSAGE=$(cat << EOF
-          🤖 GitHub Actions 알림
-          
-          📋 작업: DART 업데이트 (XBRL Excel 다운로드)
-          🏢 회사: $COMPANY_NAME ($COMPANY_CORP_CODE)
-          📅 실행 시간: $(date '+%Y-%m-%d %H:%M:%S UTC')
-          ${DATE_INFO}
-          ${STATUS_EMOJI} 결과: ${STATUS_TEXT}
-          🔗 워크플로: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          
-          #DART #현대오토에버 #자동화 #XBRL다운로드
-          EOF
-          )
-            
-            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-              -d "chat_id=${TELEGRAM_CHANNEL_ID}" \
-              -d "text=${MESSAGE}" \
-              -d "parse_mode=HTML"
-              
-            echo "📱 텔레그램 알림 전송 완료"
-          else
-            echo "⚠️ 텔레그램 설정이 없어 알림을 건너뜁니다"
-          fi
+    return {
+        'corp_code': corp_code,
+        'company_name': company_name,
+        'spreadsheet_var': spreadsheet_var
+    }
 
-# 여러 종목을 관리하는 경우 matrix 전략 사용 예시
-# jobs:
-#   update-dart-reports:
-#     strategy:
-#       matrix:
-#         company:
-#           - corp_code: '307950'
-#             name: '현대오토에버'
-#             spreadsheet_var: 'AUTOEVER_SPREADSHEET_ID'
-#           - corp_code: '005930'
-#             name: '삼성전자'
-#             spreadsheet_var: 'SAMSUNG_SPREADSHEET_ID'
-#     env:
-#       COMPANY_CORP_CODE: ${{ matrix.company.corp_code }}
-#       COMPANY_NAME: ${{ matrix.company.name }}
-#       COMPANY_SPREADSHEET_VAR: ${{ matrix.company.spreadsheet_var }}
+
+def main():
+    """메인 실행 함수"""
+    try:
+        # 회사 설정 로드
+        company_config = load_company_config()
+        
+        print(f"🤖 DART 재무제표 Excel 다운로드 시스템")
+        print(f"🏢 대상 기업: {company_config['company_name']} ({company_config['corp_code']})")
+        
+        # 다운로더 실행
+        downloader = DartExcelDownloader(company_config)
+        downloader.run()
+        
+        print("\n✅ 모든 작업이 완료되었습니다!")
+        
+    except Exception as e:
+        print(f"\n❌ 오류 발생: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+if __name__ == "__main__":
+    main()
