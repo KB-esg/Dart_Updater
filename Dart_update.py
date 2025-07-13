@@ -1708,163 +1708,220 @@ class DartExcelDownloader:
         return data
 
     def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index, notes_type='connected'):
-        """XBRL 재무제표주석 Archive 업데이트 (실제 주석 내용 반영)"""
+        """XBRL 재무제표주석 Archive 업데이트 (실제 주석 시트 내용 배치 업데이트)"""
         try:
-            # 주석 데이터 분석
             print(f"  📝 XBRL 주석 데이터 분석 중... ({notes_type})")
-            notes_analysis = self._analyze_xbrl_notes_sheets(wb)
             
-            # 업데이트 위치
+            # 업데이트할 컬럼 위치
             col_letter = self._get_column_letter(col_index)
             print(f"  📍 데이터 입력 위치: {col_letter}열")
-            
-            # 배치 업데이트 데이터 준비
-            update_data = []
             
             # 헤더 정보 업데이트
             report_date = datetime.now().strftime('%Y-%m-%d')
             quarter_info = self._get_quarter_info()
             
-            # 헤더 정보 업데이트 - pandas Series 안전 처리
-            report_name = ''
-            rcept_no = ''
-            try:
-                if self.current_report is not None:
-                    if hasattr(self.current_report, 'get'):
-                        # pandas Series 또는 dict인 경우
-                        report_name = self.current_report.get('report_nm', '')
-                        rcept_no = self.current_report.get('rcept_no', '')
-                    else:
-                        # 기타 타입인 경우 문자열로 변환
-                        report_name = str(self.current_report)
-                        rcept_no = ''
-            except Exception as e:
-                print(f"    ⚠️ 보고서 정보 추출 실패: {str(e)}")
+            # STEP 1: 모든 주석 데이터를 메모리에서 준비
+            all_notes_account_data, all_notes_value_data = self._prepare_notes_data_for_batch_update(wb, notes_type)
             
-            update_data.extend([
-                {'range': f'{col_letter}5', 'values': [[quarter_info]]},
-                {'range': f'{col_letter}6', 'values': [[report_date]]},
-                {'range': f'J1', 'values': [[f'최종업데이트: {report_date}']]}
-            ])
+            # STEP 2: 대용량 배치 업데이트 (최대 3번의 API 호출)
+            print(f"  🚀 주석 대용량 배치 업데이트 시작...")
             
-            # 실제 주석 내용을 각 할당된 행 영역에 업데이트
-            updated_count = 0
-            for note_name, info in self.notes_row_mapping.items():
-                start_row = info['start']
-                end_row = info['end']
-                display_name = info.get('name', note_name)
-                
-                # 해당 주석 항목의 상태 확인
-                if note_name in notes_analysis:
-                    status = notes_analysis[note_name]
-                    
-                    # 시작 행에 상태 정보 입력
-                    update_data.append({
-                        'range': f'{col_letter}{start_row}',
-                        'values': [[status]]
-                    })
-                    
-                    # 주석 항목에 대한 세부 정보도 추가 (선택적)
-                    if status in ['정량데이터', '정성정보'] and start_row + 1 <= end_row:
-                        detail_info = self._get_note_detail_info(wb, note_name)
-                        if detail_info:
-                            update_data.append({
-                                'range': f'{col_letter}{start_row + 1}',
-                                'values': [[detail_info]]
-                            })
-                    
-                    print(f"    📄 {display_name} ({start_row}행): {status}")
-                    updated_count += 1
-                else:
-                    # 해당 주석 항목이 없는 경우
-                    update_data.append({
-                        'range': f'{col_letter}{start_row}',
-                        'values': [['N/A']]
-                    })
+            # 배치 1: 헤더 정보 (한 번에)
+            header_range = f'{col_letter}5:{col_letter}6'
+            header_data = [[quarter_info], [report_date]]
+            sheet.update(header_range, header_data)
+            print(f"    ✅ 헤더 정보 업데이트 완료")
             
-            print(f"  📊 총 {updated_count}개 주석 항목 설정됨")
+            # 배치 2: L열 주석 항목명 대량 업데이트 (한 번에)
+            if all_notes_account_data:
+                account_range = f'L7:L500'
+                sheet.update(account_range, all_notes_account_data)
+                print(f"    ✅ L열 주석 항목 {len([row for row in all_notes_account_data if row[0]])}개 업데이트 완료")
             
-            # 배치 업데이트 실행
-            if update_data:
-                print(f"  📤 주석 Archive 업데이트 중... ({len(update_data)}개 셀)")
-                try:
-                    chunk_size = 10
-                    for i in range(0, len(update_data), chunk_size):
-                        chunk = update_data[i:i + chunk_size]
-                        sheet.batch_update(chunk)
-                        if i + chunk_size < len(update_data):
-                            time.sleep(1)
-                    
-                    print(f"  ✅ XBRL 주석 Archive 업데이트 완료")
-                    
-                except Exception as e:
-                    print(f"  ❌ 배치 업데이트 실패: {str(e)}")
-                    self._fallback_individual_update(sheet, update_data)
+            time.sleep(2)  # API 제한 회피
+            
+            # 배치 3: M열 주석 값 대량 업데이트 (한 번에)
+            if all_notes_value_data:
+                value_range = f'{col_letter}7:{col_letter}500'
+                sheet.update(value_range, all_notes_value_data)
+                print(f"    ✅ {col_letter}열 주석 값 {len([row for row in all_notes_value_data if row[0]])}개 업데이트 완료")
+            
+            # 최종 업데이트 시간 기록
+            sheet.update('J1', f'최종업데이트: {report_date}')
+            
+            print(f"  ✅ XBRL 주석 Archive 배치 업데이트 완료 (총 4번의 API 호출)")
             
         except Exception as e:
             print(f"❌ XBRL 주석 Archive 업데이트 실패: {str(e)}")
             import traceback
             print(f"📋 상세 오류: {traceback.format_exc()}")
 
-    def _get_note_detail_info(self, wb, note_name):
-        """주석 항목의 상세 정보 추출"""
+    def _prepare_notes_data_for_batch_update(self, wb, notes_type):
+        """주석 데이터를 배치 업데이트용으로 준비 (메모리에서 처리)"""
         try:
-            # D8 시트들에서 해당 주석과 관련된 정보 찾기
-            note_sheets = [name for name in wb.sheetnames if name.startswith('D8')]
+            print(f"  🔄 주석 배치 업데이트용 데이터 준비 중...")
             
-            # 주석명과 매칭되는 시트 찾기
-            for sheet_name in note_sheets:
-                try:
-                    worksheet = wb[sheet_name]
+            # 494행 (7~500행) 배열 초기화
+            all_notes_account_data = [[''] for _ in range(494)]  # L열용
+            all_notes_value_data = [[''] for _ in range(494)]    # M열용
+            
+            # D8xxxxx 주석 시트들 필터링 (연결/별도 구분)
+            if notes_type == 'connected':
+                target_sheets = [name for name in wb.sheetnames if name.startswith('D8') and name.endswith('0')]
+            else:  # separate
+                target_sheets = [name for name in wb.sheetnames if name.startswith('D8') and name.endswith('5')]
+            
+            print(f"    📄 {notes_type} 주석 시트 {len(target_sheets)}개 발견")
+            
+            # 각 주석 시트의 데이터 추출 및 배치
+            current_row_index = 0
+            for sheet_name in target_sheets:
+                if current_row_index >= 494:  # 배열 범위 초과 방지
+                    break
                     
-                    # 제목에서 주석 내용 확인
-                    for row in worksheet.iter_rows(min_row=1, max_row=5, min_col=1, max_col=1, values_only=True):
-                        if row[0] and isinstance(row[0], str):
-                            title_lower = row[0].lower()
-                            note_name_lower = note_name.lower()
-                            
-                            # 키워드 매칭
-                            if (note_name_lower in title_lower or 
-                                self._check_note_keyword_match(note_name_lower, title_lower)):
-                                
-                                # 데이터 개수 카운트
-                                data_count = 0
-                                for data_row in worksheet.iter_rows(min_row=3, max_row=15, values_only=True):
-                                    if any(cell for cell in data_row if cell):
-                                        data_count += 1
-                                
-                                if data_count > 0:
-                                    return f"데이터{data_count}행"
-                                else:
-                                    return "정성정보"
-                                    
-                except Exception:
-                    continue
+                sheet_data = self._extract_notes_sheet_data(wb[sheet_name], sheet_name)
+                if sheet_data:
+                    used_rows = self._place_notes_data_in_arrays(
+                        sheet_data, 
+                        all_notes_account_data, 
+                        all_notes_value_data, 
+                        current_row_index
+                    )
+                    current_row_index += used_rows
+                    print(f"      ✅ {sheet_name}: {len(sheet_data['items'])}개 항목 → {used_rows}행 사용")
             
-            return "기본정보"
+            # 통계 출력
+            account_count = len([row for row in all_notes_account_data if row[0]])
+            value_count = len([row for row in all_notes_value_data if row[0]])
+            print(f"    📋 주석 준비 완료: 항목명 {account_count}개, 값 {value_count}개")
+            
+            return all_notes_account_data, all_notes_value_data
             
         except Exception as e:
-            print(f"    ⚠️ 주석 상세 정보 추출 실패 ({note_name}): {str(e)}")
-            return "정보있음"
+            print(f"  ❌ 주석 배치 데이터 준비 실패: {str(e)}")
+            return None, None
 
-    def _check_note_keyword_match(self, note_name, title):
-        """주석명과 시트 제목의 키워드 매칭 확인"""
-        keyword_groups = {
-            '현금': ['현금', '금융자산'],
-            '재고': ['재고'],
-            '유형': ['유형', '자산'],
-            '무형': ['무형', '자산'],
-            '리스': ['리스', '사용권'],
-            '자본': ['자본', '주식'],
-            '수익': ['수익', '매출'],
-            '법인세': ['법인세', '세무']
-        }
-        
-        for base_keyword, related_keywords in keyword_groups.items():
-            if base_keyword in note_name:
-                return any(keyword in title for keyword in related_keywords)
-        
-        return False
+    def _extract_notes_sheet_data(self, worksheet, sheet_name):
+        """개별 주석 시트에서 A열 항목과 B열 값 추출"""
+        try:
+            sheet_data = {
+                'title': '',
+                'items': []
+            }
+            
+            # 제목 추출 (보통 2행에 있음)
+            for row in worksheet.iter_rows(min_row=1, max_row=5, min_col=1, max_col=1, values_only=True):
+                if row[0] and isinstance(row[0], str) and sheet_name in row[0]:
+                    sheet_data['title'] = row[0]
+                    break
+            
+            if not sheet_data['title']:
+                sheet_data['title'] = f"[{sheet_name}] 주석"
+            
+            # A열 항목들과 B열 값들 추출 (3행부터)
+            for row in worksheet.iter_rows(min_row=3, max_row=50, values_only=True):
+                if not row or len(row) < 1:
+                    continue
+                    
+                # A열 항목명
+                item_name = row[0]
+                if not item_name or not isinstance(item_name, str):
+                    continue
+                    
+                item_name = str(item_name).strip()
+                
+                # 유효한 항목명 필터링
+                if (len(item_name) > 1 and 
+                    not item_name.startswith(('[', '주석', 'Index', '구분')) and
+                    not item_name.endswith(('영역]', '항목')) and
+                    item_name not in ['', '-', '해당없음']):
+                    
+                    # B열 값 추출 (있는 경우만)
+                    value = None
+                    if len(row) > 1 and row[1]:
+                        if isinstance(row[1], (int, float)):
+                            value = row[1]
+                        elif isinstance(row[1], str):
+                            # 날짜나 기간 정보도 값으로 처리
+                            value_str = str(row[1]).strip()
+                            if value_str and value_str != '-':
+                                value = value_str
+                    
+                    sheet_data['items'].append({
+                        'name': item_name,
+                        'value': value,
+                        'formatted_value': self._format_notes_value(value) if value else ''
+                    })
+            
+            return sheet_data if sheet_data['items'] else None
+            
+        except Exception as e:
+            print(f"      ⚠️ 주석 시트 {sheet_name} 데이터 추출 실패: {str(e)}")
+            return None
+
+    def _place_notes_data_in_arrays(self, sheet_data, account_array, value_array, start_index):
+        """주석 시트 데이터를 배치 배열에 배치"""
+        try:
+            if start_index >= len(account_array):
+                return 0
+            
+            current_index = start_index
+            
+            # 주석 시트 제목 배치
+            if current_index < len(account_array):
+                account_array[current_index][0] = sheet_data['title']
+                value_array[current_index][0] = ''
+                current_index += 1
+            
+            # 각 항목들 배치
+            for item in sheet_data['items']:
+                if current_index >= len(account_array):
+                    break
+                    
+                account_array[current_index][0] = item['name']
+                value_array[current_index][0] = item['formatted_value']
+                current_index += 1
+            
+            # 구분을 위한 빈 행 추가
+            if current_index < len(account_array):
+                account_array[current_index][0] = ''
+                value_array[current_index][0] = ''
+                current_index += 1
+            
+            used_rows = current_index - start_index
+            return used_rows
+            
+        except Exception as e:
+            print(f"    ⚠️ 주석 배열 배치 실패: {str(e)}")
+            return 0
+
+    def _format_notes_value(self, value):
+        """주석 값 포맷팅"""
+        try:
+            if value is None:
+                return ''
+            
+            # 숫자인 경우 억원 단위로 변환
+            if isinstance(value, (int, float)):
+                if abs(value) >= 100000000:  # 1억 이상
+                    billion_value = value / 100000000
+                    return f"{billion_value:.2f}억원"
+                elif abs(value) >= 1000000:  # 100만 이상
+                    million_value = value / 1000000
+                    return f"{million_value:.1f}백만원"
+                else:
+                    return str(value)
+            
+            # 문자열인 경우 그대로 반환 (날짜, 기간 등)
+            elif isinstance(value, str):
+                return value[:50]  # 최대 50자로 제한
+            
+            else:
+                return str(value)
+                
+        except Exception as e:
+            print(f"    ⚠️ 주석 값 포맷팅 오류 ({value}): {str(e)}")
+            return str(value) if value else ''
 
     def _fallback_individual_update(self, sheet, update_data):
         """개별 업데이트 fallback"""
