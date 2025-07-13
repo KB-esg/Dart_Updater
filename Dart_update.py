@@ -692,434 +692,6 @@ class DartExcelDownloader:
             print(f"⚠️ 마지막 열 찾기 실패: {str(e)}")
             return 11  # 기본값: M열 (12에서 11로 수정)
 
-    def _extract_balance_sheet_data(self, wb):
-        """재무상태표 데이터 추출 (Series 오류 완전 해결)"""
-        data = {}
-        try:
-            if 'D210000' not in wb.sheetnames:
-                print(f"    ⚠️ D210000 시트를 찾을 수 없습니다. 사용 가능한 시트: {wb.sheetnames}")
-                return data
-                
-            sheet = wb['D210000']  # 연결 재무상태표
-            print(f"    📊 재무상태표 시트 분석 중... (최대 행: {sheet.max_row})")
-            
-            # 데이터를 안전하게 추출
-            sheet_data = []
-            for row_idx, row in enumerate(sheet.iter_rows(values_only=True, max_row=200)):
-                if row:
-                    # 각 셀을 안전하게 변환
-                    row_list = []
-                    for cell in row:
-                        if cell is None:
-                            row_list.append('')
-                        elif isinstance(cell, (int, float)):
-                            row_list.append(cell)
-                        else:
-                            row_list.append(str(cell))
-                    sheet_data.append(row_list)
-            
-            print(f"    📋 총 {len(sheet_data)}행 데이터 로드됨")
-            
-            # 키워드 매칭으로 데이터 추출
-            found_items = []
-            for row_idx, row in enumerate(sheet_data):
-                if not row or len(row) == 0:
-                    continue
-                    
-                # 첫 번째 셀 검사 (계정과목명)
-                first_cell = row[0] if len(row) > 0 else ''
-                if not first_cell or not isinstance(first_cell, str):
-                    continue
-                    
-                account_name = str(first_cell).strip()
-                if len(account_name) < 2:  # 너무 짧은 이름 제외
-                    continue
-                
-                # 값 추출 (보통 3번째 열에 최신 데이터)
-                value = None
-                for col_idx in [2, 1, 3]:  # 우선순위: 3열 -> 2열 -> 4열
-                    if len(row) > col_idx and row[col_idx]:
-                        try:
-                            if isinstance(row[col_idx], (int, float)):
-                                value = row[col_idx]
-                                break
-                            elif isinstance(row[col_idx], str):
-                                # 문자열에서 숫자 추출 시도
-                                clean_val = str(row[col_idx]).replace(',', '').replace('(', '-').replace(')', '').strip()
-                                if clean_val and clean_val != '-':
-                                    value = float(clean_val)
-                                    break
-                        except (ValueError, TypeError):
-                            continue
-                
-                # 계정과목별 매핑
-                if account_name == '자산 총계' or account_name == '자산총계':
-                    data['자산총계'] = value
-                    found_items.append(f"자산총계: {value}")
-                elif account_name == '유동자산':
-                    data['유동자산'] = value
-                    found_items.append(f"유동자산: {value}")
-                elif account_name == '현금및현금성자산':
-                    data['현금및현금성자산'] = value
-                    found_items.append(f"현금및현금성자산: {value}")
-                elif account_name == '기타유동자산':
-                    data['기타유동자산'] = value
-                    found_items.append(f"기타유동자산: {value}")
-                elif account_name == '재고자산':
-                    data['재고자산'] = value
-                    found_items.append(f"재고자산: {value}")
-                elif account_name == '비유동자산':
-                    data['비유동자산'] = value
-                    found_items.append(f"비유동자산: {value}")
-                elif account_name == '유형자산':
-                    data['유형자산'] = value
-                    found_items.append(f"유형자산: {value}")
-                elif account_name == '사용권자산':
-                    data['사용권자산'] = value
-                    found_items.append(f"사용권자산: {value}")
-                elif account_name == '무형자산':
-                    data['무형자산'] = value
-                    found_items.append(f"무형자산: {value}")
-                elif '관계기업' in account_name and '투자' in account_name:
-                    data['관계기업투자'] = value
-                    found_items.append(f"관계기업투자: {value}")
-                elif account_name == '부채 총계' or account_name == '부채총계':
-                    data['부채총계'] = value
-                    found_items.append(f"부채총계: {value}")
-                elif account_name == '유동부채':
-                    data['유동부채'] = value
-                    found_items.append(f"유동부채: {value}")
-                elif account_name == '기타유동부채':
-                    data['기타유동부채'] = value
-                    found_items.append(f"기타유동부채: {value}")
-                elif account_name == '당기법인세부채':
-                    data['당기법인세부채'] = value
-                    found_items.append(f"당기법인세부채: {value}")
-                elif account_name == '비유동부채':
-                    data['비유동부채'] = value
-                    found_items.append(f"비유동부채: {value}")
-                elif account_name == '자본 총계' or account_name == '자본총계':
-                    data['자본총계'] = value
-                    found_items.append(f"자본총계: {value}")
-                elif account_name == '자본금':
-                    data['자본금'] = value
-                    found_items.append(f"자본금: {value}")
-                elif account_name == '자본잉여금':
-                    data['자본잉여금'] = value
-                    found_items.append(f"자본잉여금: {value}")
-                elif '이익잉여금' in account_name:
-                    data['이익잉여금'] = value
-                    found_items.append(f"이익잉여금: {value}")
-            
-            print(f"    ✅ 재무상태표에서 {len(found_items)}개 항목 추출:")
-            for item in found_items[:5]:  # 처음 5개만 출력
-                print(f"      - {item}")
-            if len(found_items) > 5:
-                print(f"      - ... 총 {len(found_items)}개")
-        
-        except Exception as e:
-            print(f"    ❌ 재무상태표 데이터 추출 실패: {str(e)}")
-            import traceback
-            print(f"    📋 상세 오류: {traceback.format_exc()}")
-        
-        return data
-
-    def _extract_income_statement_data(self, wb):
-        """포괄손익계산서 데이터 추출 (Series 오류 완전 해결)"""
-        data = {}
-        try:
-            if 'D431410' not in wb.sheetnames:
-                print(f"    ⚠️ D431410 시트를 찾을 수 없습니다.")
-                return data
-                
-            sheet = wb['D431410']  # 연결 포괄손익계산서
-            print(f"    💰 손익계산서 시트 분석 중...")
-            
-            # 데이터를 안전하게 추출
-            sheet_data = []
-            for row in sheet.iter_rows(values_only=True, max_row=100):
-                if row:
-                    row_list = []
-                    for cell in row:
-                        if cell is None:
-                            row_list.append('')
-                        elif isinstance(cell, (int, float)):
-                            row_list.append(cell)
-                        else:
-                            row_list.append(str(cell))
-                    sheet_data.append(row_list)
-            
-            found_items = []
-            for row in sheet_data:
-                if not row or len(row) == 0:
-                    continue
-                    
-                first_cell = row[0] if len(row) > 0 else ''
-                if not first_cell or not isinstance(first_cell, str):
-                    continue
-                    
-                account_name = str(first_cell).strip()
-                if len(account_name) < 2:
-                    continue
-                
-                # 값 추출
-                value = None
-                for col_idx in [2, 1, 3]:
-                    if len(row) > col_idx and row[col_idx]:
-                        try:
-                            if isinstance(row[col_idx], (int, float)):
-                                value = row[col_idx]
-                                break
-                            elif isinstance(row[col_idx], str):
-                                clean_val = str(row[col_idx]).replace(',', '').replace('(', '-').replace(')', '').strip()
-                                if clean_val and clean_val != '-':
-                                    value = float(clean_val)
-                                    break
-                        except (ValueError, TypeError):
-                            continue
-                
-                # 손익 항목별 매핑
-                if '매출액' in account_name or account_name == '수익(매출액)' or '영업수익' in account_name:
-                    data['매출액'] = value
-                    found_items.append(f"매출액: {value}")
-                elif account_name == '영업이익(손실)' or account_name == '영업이익':
-                    data['영업이익'] = value
-                    found_items.append(f"영업이익: {value}")
-                elif account_name == '당기순이익(손실)' or account_name == '당기순이익':
-                    data['당기순이익'] = value
-                    found_items.append(f"당기순이익: {value}")
-            
-            print(f"    ✅ 손익계산서에서 {len(found_items)}개 항목 추출:")
-            for item in found_items:
-                print(f"      - {item}")
-        
-        except Exception as e:
-            print(f"    ❌ 손익계산서 데이터 추출 실패: {str(e)}")
-        
-        return data
-
-    def _extract_cashflow_statement_data(self, wb):
-        """현금흐름표 데이터 추출 (Series 오류 완전 해결)"""
-        data = {}
-        try:
-            if 'D520000' not in wb.sheetnames:
-                print(f"    ⚠️ D520000 시트를 찾을 수 없습니다.")
-                return data
-                
-            sheet = wb['D520000']  # 연결 현금흐름표
-            print(f"    💸 현금흐름표 시트 분석 중...")
-            
-            # 데이터를 안전하게 추출
-            sheet_data = []
-            for row in sheet.iter_rows(values_only=True, max_row=100):
-                if row:
-                    row_list = []
-                    for cell in row:
-                        if cell is None:
-                            row_list.append('')
-                        elif isinstance(cell, (int, float)):
-                            row_list.append(cell)
-                        else:
-                            row_list.append(str(cell))
-                    sheet_data.append(row_list)
-            
-            found_items = []
-            for row in sheet_data:
-                if not row or len(row) == 0:
-                    continue
-                    
-                first_cell = row[0] if len(row) > 0 else ''
-                if not first_cell or not isinstance(first_cell, str):
-                    continue
-                    
-                account_name = str(first_cell).strip()
-                if len(account_name) < 2:
-                    continue
-                
-                # 값 추출
-                value = None
-                for col_idx in [2, 1, 3]:
-                    if len(row) > col_idx and row[col_idx]:
-                        try:
-                            if isinstance(row[col_idx], (int, float)):
-                                value = row[col_idx]
-                                break
-                            elif isinstance(row[col_idx], str):
-                                clean_val = str(row[col_idx]).replace(',', '').replace('(', '-').replace(')', '').strip()
-                                if clean_val and clean_val != '-':
-                                    value = float(clean_val)
-                                    break
-                        except (ValueError, TypeError):
-                            continue
-                
-                # 현금흐름 항목별 매핑
-                if '영업활동' in account_name and '현금흐름' in account_name:
-                    data['영업활동현금흐름'] = value
-                    found_items.append(f"영업활동현금흐름: {value}")
-                elif '투자활동' in account_name and '현금흐름' in account_name:
-                    data['투자활동현금흐름'] = value
-                    found_items.append(f"투자활동현금흐름: {value}")
-                elif '재무활동' in account_name and '현금흐름' in account_name:
-                    data['재무활동현금흐름'] = value
-                    found_items.append(f"재무활동현금흐름: {value}")
-            
-            print(f"    ✅ 현금흐름표에서 {len(found_items)}개 항목 추출:")
-            for item in found_items:
-                print(f"      - {item}")
-        
-        except Exception as e:
-            print(f"    ❌ 현금흐름표 데이터 추출 실패: {str(e)}")
-        
-        return data
-
-    def _analyze_xbrl_notes_sheets(self, wb):
-        """XBRL 주석 시트들 분석 (D8xxxxx 시트 기반 재설계)"""
-        analysis = {}
-        
-        try:
-            print(f"    📚 주석 시트 분석 중... (총 {len(wb.sheetnames)}개 시트)")
-            
-            # D8xxxxx 시트들 필터링
-            note_sheets = [name for name in wb.sheetnames if name.startswith('D8')]
-            print(f"    📄 D8 주석 시트 {len(note_sheets)}개 발견")
-            
-            # 연결/별도 구분
-            connected_sheets = [name for name in note_sheets if name.endswith('0')]
-            separate_sheets = [name for name in note_sheets if name.endswith('5')]
-            
-            print(f"    🔗 연결 주석: {len(connected_sheets)}개, 📋 별도 주석: {len(separate_sheets)}개")
-            
-            # 각 주석 시트 분석
-            for sheet_name in note_sheets:
-                try:
-                    if sheet_name not in wb.sheetnames:
-                        continue
-                        
-                    worksheet = wb[sheet_name]
-                    sheet_analysis = self._analyze_single_note_sheet(worksheet, sheet_name)
-                    
-                    if sheet_analysis:
-                        # 주석 제목에서 카테고리 추출
-                        category = self._extract_note_category(sheet_analysis.get('title', ''))
-                        if category:
-                            analysis[category] = sheet_analysis['status']
-                            
-                except Exception as e:
-                    print(f"      ⚠️ {sheet_name} 분석 실패: {str(e)}")
-                    continue
-            
-            # 분석 결과가 없을 경우 기본값 제공
-            if not analysis:
-                analysis = self._get_default_notes_analysis()
-            
-            print(f"    ✅ 총 {len(analysis)}개 주석 카테고리 분석 완료")
-            
-        except Exception as e:
-            print(f"    ❌ 주석 시트 분석 실패: {str(e)}")
-            analysis = self._get_default_notes_analysis()
-        
-        return analysis
-
-    def _analyze_single_note_sheet(self, worksheet, sheet_name):
-        """개별 주석 시트 분석"""
-        try:
-            analysis = {
-                'title': '',
-                'status': 'N/A',
-                'has_data': False,
-                'data_rows': 0
-            }
-            
-            # 제목 추출 (보통 A2 셀에 위치)
-            title_cell = None
-            for row in worksheet.iter_rows(min_row=1, max_row=5, min_col=1, max_col=1, values_only=True):
-                if row[0] and isinstance(row[0], str) and 'D8' in row[0]:
-                    analysis['title'] = row[0]
-                    break
-            
-            # 데이터 존재 여부 확인
-            data_count = 0
-            text_count = 0
-            number_count = 0
-            
-            # 처음 20행만 검사 (성능 고려)
-            for row in worksheet.iter_rows(min_row=3, max_row=22, values_only=True):
-                if any(cell for cell in row if cell):
-                    data_count += 1
-                    for cell in row:
-                        if isinstance(cell, (int, float)) and cell != 0:
-                            number_count += 1
-                        elif isinstance(cell, str) and len(cell.strip()) > 5:
-                            text_count += 1
-            
-            analysis['data_rows'] = data_count
-            analysis['has_data'] = data_count > 0
-            
-            # 상태 결정
-            if number_count > 5:
-                analysis['status'] = '정량데이터'
-            elif text_count > 10:
-                analysis['status'] = '정성정보'
-            elif data_count > 0:
-                analysis['status'] = '기본정보'
-            else:
-                analysis['status'] = 'N/A'
-            
-            return analysis
-            
-        except Exception as e:
-            print(f"      ⚠️ 시트 {sheet_name} 개별 분석 실패: {str(e)}")
-            return None
-
-    def _extract_note_category(self, title):
-        """주석 제목에서 카테고리 추출"""
-        if not title or not isinstance(title, str):
-            return None
-            
-        # 제목에서 주요 키워드 추출
-        title_lower = title.lower()
-        
-        # 카테고리 매핑
-        category_mapping = {
-            '회계정책': ['회계정책', '정책', '추정'],
-            '현금및현금성자산': ['현금', '금융자산', '유가증권'],
-            '매출채권': ['매출채권', '채권', '수취채권'],
-            '재고자산': ['재고자산', '재고'],
-            '유형자산': ['유형자산', '토지', '건물', '기계', '설비'],
-            '사용권자산': ['사용권자산', '리스자산', '리스'],
-            '무형자산': ['무형자산', '영업권', '특허', '소프트웨어'],
-            '관계기업투자': ['관계기업', '지분법', '투자'],
-            '기타금융자산': ['금융자산', '파생상품', '공정가치'],
-            '매입채무': ['매입채무', '지급채무', '미지급'],
-            '기타유동부채': ['유동부채', '선수금', '예수금'],
-            '충당부채': ['충당부채', '충당금', '보증', '소송'],
-            '확정급여부채': ['확정급여', '퇴직급여', '연금', '급여'],
-            '이연법인세': ['이연법인세', '법인세'],
-            '자본금': ['자본금', '주식', '주주'],
-            '자본잉여금': ['자본잉여금', '주식발행초과금'],
-            '수익인식': ['수익', '매출', '계약'],
-            '주당손익': ['주당이익', '주당손익', 'eps'],
-            '법인세비용': ['법인세비용', '세무', '세율']
-        }
-        
-        for category, keywords in category_mapping.items():
-            if any(keyword in title_lower for keyword in keywords):
-                return category
-        
-        return '기타'
-
-    def _get_default_notes_analysis(self):
-        """기본 주석 분석 결과"""
-        return {
-            '회계정책': '기본정보',
-            '현금및현금성자산': 'N/A',
-            '유형자산': 'N/A',
-            '무형자산': 'N/A',
-            '수익인식': 'N/A',
-            '주당손익': 'N/A',
-            '법인세비용': 'N/A'
-        }
-
     def _update_xbrl_financial_archive_batch(self, sheet, wb, col_index):
         """XBRL 재무제표 Archive 업데이트 (대용량 배치 업데이트 최적화)"""
         try:
@@ -1316,399 +888,8 @@ class DartExcelDownloader:
         except Exception as e:
             print(f"    ⚠️ 배열 배치 실패: {str(e)}")
 
-    def _ensure_account_names_in_l_column(self, sheet, wb, update_data):
-        """L열 계정명 확인 (배치 업데이트로 대체됨)"""
-        # 이 메서드는 배치 업데이트로 대체되었으므로 빈 구현
-        print(f"    📋 L열 계정명은 배치 업데이트로 처리됩니다.")
-        pass
-
-    def _vlookup_style_data_matching(self, sheet, wb, col_letter):
-        """VLOOKUP 매칭 (배치 업데이트로 대체됨)"""
-        # 이 메서드는 배치 업데이트로 대체되었으므로 빈 구현
-        print(f"    🔍 데이터 매칭은 배치 업데이트로 처리됩니다.")
-        return []
-
-    def _extract_and_update_account_names_by_sheet(self, sheet, wb, update_data):
-        """시트별 계정명 추출 (배치 업데이트로 대체됨)"""
-        # 이 메서드는 배치 업데이트로 대체되었으므로 빈 구현
-        print(f"    📋 시트별 계정명 추출은 배치 업데이트로 처리됩니다.")
-        pass
-
-    def _update_financial_data_by_type(self, wb, col_letter, all_financial_data):
-        """재무 데이터 업데이트 (배치 업데이트로 대체됨)"""
-        # 이 메서드는 배치 업데이트로 대체되었으므로 빈 구현
-        print(f"    📊 재무 데이터 업데이트는 배치 업데이트로 처리됩니다.")
-        return []
-
-    def _extract_and_update_account_names_by_sheet(self, sheet, wb, update_data):
-        """시트별 고정 행 영역에 계정명 추출 및 업데이트"""
-        try:
-            print(f"  📋 시트별 계정명 추출 및 업데이트 중...")
-            
-            # 현재 L열에 데이터가 있는지 확인
-            try:
-                l_column_values = sheet.col_values(12)  # L열 = 12번째 열
-                has_account_names = any(val and val != '' and '계정과목' not in val and '항목명' not in val 
-                                      for val in l_column_values[6:])  # 7행부터 확인
-            except:
-                has_account_names = False
-            
-            if has_account_names:
-                print(f"    ✅ L열에 이미 계정명이 있습니다. 건너뜁니다.")
-                return
-            
-            # 연결 재무제표 시트별 계정명 추출
-            for sheet_code, info in self.financial_row_mapping['connected'].items():
-                if sheet_code in wb.sheetnames:
-                    ws = wb[sheet_code]
-                    start_row = info['start']
-                    end_row = info['end']
-                    sheet_name = info['name']
-                    
-                    print(f"    📄 {sheet_code} ({sheet_name}) 계정명 추출: {start_row}~{end_row}행")
-                    
-                    # 계정명 추출
-                    extracted_names = []
-                    for row in ws.iter_rows(values_only=True, max_row=200):
-                        if row and row[0] and isinstance(row[0], str):
-                            account_name = str(row[0]).strip()
-                            if len(account_name) > 1 and not account_name.startswith('주석'):
-                                extracted_names.append(account_name)
-                    
-                    # L열에 업데이트할 데이터 추가 (할당된 행 영역 내에서)
-                    current_row = start_row
-                    for name in extracted_names[:end_row-start_row+1]:  # 할당된 행 수만큼
-                        if current_row <= end_row:
-                            update_data.append({
-                                'range': f'L{current_row}',
-                                'values': [[name]]
-                            })
-                            current_row += 1
-                    
-                    print(f"      ✅ {min(len(extracted_names), end_row-start_row+1)}개 계정명 할당")
-            
-            # 별도 재무제표 시트별 계정명 추출
-            for sheet_code, info in self.financial_row_mapping['separate'].items():
-                if sheet_code in wb.sheetnames:
-                    ws = wb[sheet_code]
-                    start_row = info['start']
-                    end_row = info['end']
-                    sheet_name = info['name']
-                    
-                    print(f"    📄 {sheet_code} ({sheet_name}) 계정명 추출: {start_row}~{end_row}행")
-                    
-                    # 계정명 추출
-                    extracted_names = []
-                    for row in ws.iter_rows(values_only=True, max_row=200):
-                        if row and row[0] and isinstance(row[0], str):
-                            account_name = str(row[0]).strip()
-                            if len(account_name) > 1 and not account_name.startswith('주석'):
-                                extracted_names.append(account_name)
-                    
-                    # L열에 업데이트할 데이터 추가 (할당된 행 영역 내에서)
-                    current_row = start_row
-                    for name in extracted_names[:end_row-start_row+1]:  # 할당된 행 수만큼
-                        if current_row <= end_row:
-                            update_data.append({
-                                'range': f'L{current_row}',
-                                'values': [[name]]
-                            })
-                            current_row += 1
-                    
-                    print(f"      ✅ {min(len(extracted_names), end_row-start_row+1)}개 계정명 할당")
-            
-            print(f"  ✅ 시트별 계정명 추출 완료")
-            
-        except Exception as e:
-            print(f"  ⚠️ 시트별 계정명 추출 실패: {str(e)}")
-
-    def _update_financial_data_by_type(self, wb, col_letter, all_financial_data):
-        """재무 데이터를 L열 계정명에 맞게 정확히 매칭하여 업데이트 (개선된 버전)"""
-        update_list = []
-        
-        try:
-            print(f"  📊 L열 계정명 기반 데이터 매칭 중...")
-            
-            # 현재 시트의 L열에서 계정명 목록 가져오기
-            try:
-                # 우선 현재 Archive 시트의 L열 값들을 가져옴
-                archive_sheet = self.workbook.worksheet('Dart_Archive_XBRL_재무제표')
-                l_column_values = archive_sheet.col_values(12)  # L열 = 12번째 열
-                
-                print(f"    📋 L열에서 {len(l_column_values)}개 행 확인")
-                
-                # 7행부터 500행까지 계정명 확인
-                account_mapping = {}
-                for row_idx in range(6, min(len(l_column_values), 500)):  # 7행부터 (index 6)
-                    account_name = l_column_values[row_idx] if row_idx < len(l_column_values) else ''
-                    if account_name and account_name.strip() and account_name not in ['계정과목', '항목명', '', '=== 구분선 ===']:
-                        real_row_num = row_idx + 1  # 실제 행 번호
-                        account_mapping[account_name.strip()] = real_row_num
-                
-                print(f"    ✅ 유효한 계정명 {len(account_mapping)}개 발견")
-                
-                if len(account_mapping) > 0:
-                    # L열에 계정명이 있는 경우 - 정확한 매칭으로 데이터 입력
-                    matched_data = self._match_accounts_with_excel_data(wb, account_mapping)
-                    
-                    for account_name, (row_num, value) in matched_data.items():
-                        if value is not None:
-                            formatted_value = self._format_number_for_archive(value)
-                            update_list.append({
-                                'range': f'{col_letter}{row_num}',
-                                'values': [[formatted_value]]
-                            })
-                            print(f"    📈 {account_name}: {formatted_value}억원 (L{row_num})")
-                        else:
-                            # 값이 없는 경우 빈 값
-                            update_list.append({
-                                'range': f'{col_letter}{row_num}',
-                                'values': [['']]
-                            })
-                else:
-                    # L열에 계정명이 없는 경우 - 기존 방식대로 연결/별도 구분
-                    print(f"    📋 L열에 계정명이 없습니다. 기존 방식으로 처리합니다.")
-                    update_list = self._update_data_without_account_mapping(wb, col_letter, all_financial_data)
-                    
-            except Exception as e:
-                print(f"    ⚠️ L열 읽기 실패: {str(e)}")
-                # fallback으로 기존 방식 사용
-                update_list = self._update_data_without_account_mapping(wb, col_letter, all_financial_data)
-        
-        except Exception as e:
-            print(f"  ❌ 재무 데이터 매핑 실패: {str(e)}")
-        
-        return update_list
-
-    def _match_accounts_with_excel_data(self, wb, account_mapping):
-        """L열의 계정명과 Excel 시트의 계정명을 정확히 매칭하여 데이터 추출"""
-        matched_data = {}
-        
-        try:
-            print(f"    🔍 Excel 시트와 계정명 매칭 중...")
-            
-            # 모든 재무제표 시트에서 데이터 추출
-            financial_sheets = ['D210000', 'D210005', 'D431410', 'D431415', 'D520000', 'D520005', 'D610000', 'D610005']
-            
-            # 각 시트별로 계정명-값 매핑 생성
-            excel_data_by_sheet = {}
-            for sheet_name in financial_sheets:
-                if sheet_name in wb.sheetnames:
-                    excel_data_by_sheet[sheet_name] = self._extract_account_value_mapping(wb[sheet_name])
-                    print(f"      📄 {sheet_name}: {len(excel_data_by_sheet[sheet_name])}개 계정 발견")
-            
-            # L열의 각 계정명에 대해 Excel에서 매칭되는 값 찾기
-            for l_account_name, row_num in account_mapping.items():
-                best_match_value = None
-                best_match_confidence = 0
-                
-                # 모든 시트에서 가장 잘 매칭되는 계정 찾기
-                for sheet_name, sheet_data in excel_data_by_sheet.items():
-                    for excel_account_name, excel_value in sheet_data.items():
-                        confidence = self._calculate_account_matching_confidence(l_account_name, excel_account_name)
-                        
-                        if confidence > best_match_confidence and confidence > 0.7:  # 70% 이상 매칭
-                            best_match_value = excel_value
-                            best_match_confidence = confidence
-                            if confidence > 0.95:  # 95% 이상이면 완벽한 매칭으로 간주하고 중단
-                                break
-                
-                matched_data[l_account_name] = (row_num, best_match_value)
-                
-                if best_match_value is not None:
-                    confidence_pct = int(best_match_confidence * 100)
-                    print(f"      ✅ '{l_account_name}' 매칭 성공 ({confidence_pct}% 신뢰도)")
-                else:
-                    print(f"      ⚠️ '{l_account_name}' 매칭 실패")
-        
-        except Exception as e:
-            print(f"    ❌ 계정명 매칭 실패: {str(e)}")
-        
-        return matched_data
-
-    def _extract_account_value_mapping(self, worksheet):
-        """워크시트에서 계정명-값 매핑 추출"""
-        account_data = {}
-        
-        try:
-            for row in worksheet.iter_rows(values_only=True, max_row=300):
-                if row and len(row) > 0 and row[0]:
-                    account_name = str(row[0]).strip()
-                    
-                    if len(account_name) > 1:
-                        # 값 추출 (우선순위: 3열 > 2열 > 4열)
-                        value = None
-                        for col_idx in [2, 1, 3, 4]:
-                            if len(row) > col_idx and row[col_idx]:
-                                try:
-                                    if isinstance(row[col_idx], (int, float)):
-                                        value = row[col_idx]
-                                        break
-                                    elif isinstance(row[col_idx], str):
-                                        clean_val = str(row[col_idx]).replace(',', '').replace('(', '-').replace(')', '').strip()
-                                        if clean_val and clean_val != '-' and clean_val.replace('.', '').replace('-', '').isdigit():
-                                            value = float(clean_val)
-                                            break
-                                except:
-                                    continue
-                        
-                        if value is not None and abs(value) > 1000:  # 의미있는 값만
-                            account_data[account_name] = value
-        
-        except Exception as e:
-            print(f"      ⚠️ 워크시트 데이터 추출 실패: {str(e)}")
-        
-        return account_data
-
-    def _calculate_account_matching_confidence(self, archive_account, excel_account):
-        """두 계정명의 매칭 신뢰도 계산 (0.0 ~ 1.0)"""
-        try:
-            # 정확히 같은 경우
-            if archive_account == excel_account:
-                return 1.0
-            
-            # 대소문자 무시하고 같은 경우
-            if archive_account.lower() == excel_account.lower():
-                return 0.98
-            
-            # 공백 제거 후 같은 경우
-            if archive_account.replace(' ', '') == excel_account.replace(' ', ''):
-                return 0.95
-            
-            # 포함 관계 확인
-            archive_clean = archive_account.replace(' ', '').lower()
-            excel_clean = excel_account.replace(' ', '').lower()
-            
-            if archive_clean in excel_clean or excel_clean in archive_clean:
-                # 포함된 길이 비율에 따라 신뢰도 계산
-                min_len = min(len(archive_clean), len(excel_clean))
-                max_len = max(len(archive_clean), len(excel_clean))
-                return 0.7 + (min_len / max_len) * 0.2
-            
-            # 키워드 매칭 (주요 키워드가 포함되어 있는지)
-            keywords_match = 0
-            total_keywords = 0
-            
-            # 아카이브 계정명을 키워드로 분해
-            archive_keywords = [word for word in archive_account.replace('(', '').replace(')', '').split() if len(word) > 1]
-            
-            for keyword in archive_keywords:
-                total_keywords += 1
-                if keyword.lower() in excel_account.lower():
-                    keywords_match += 1
-            
-            if total_keywords > 0:
-                keyword_ratio = keywords_match / total_keywords
-                if keyword_ratio >= 0.7:  # 70% 이상의 키워드가 매칭
-                    return 0.6 + keyword_ratio * 0.3
-            
-            return 0.0
-            
-        except Exception as e:
-            print(f"      ⚠️ 매칭 신뢰도 계산 실패: {str(e)}")
-            return 0.0
-
-    def _update_data_without_account_mapping(self, wb, col_letter, all_financial_data):
-        """기존 방식으로 연결/별도 구분하여 데이터 업데이트 (fallback)"""
-        update_list = []
-        
-        try:
-            print(f"    📊 기존 방식으로 연결/별도 데이터 매핑 중...")
-            
-            # 연결 재무제표 데이터 (7행부터)
-            connected_data = self._extract_data_from_connected_sheets(wb)
-            
-            # 별도 재무제표 데이터 (257행부터) 
-            separate_data = self._extract_data_from_separate_sheets(wb)
-            
-            # 연결 데이터 업데이트 (7행부터)
-            for i, (account, value) in enumerate(connected_data.items()):
-                if i < 240:  # 7~246행까지
-                    row_num = 7 + i
-                    formatted_value = self._format_number_for_archive(value) if value else ''
-                    update_list.append({
-                        'range': f'{col_letter}{row_num}',
-                        'values': [[formatted_value]]
-                    })
-                    if formatted_value:
-                        print(f"    📈 [연결] {account}: {formatted_value}억원 (L{row_num})")
-            
-            # 별도 데이터 업데이트 (257행부터)
-            for i, (account, value) in enumerate(separate_data.items()):
-                if i < 240:  # 257~496행까지
-                    row_num = 257 + i
-                    formatted_value = self._format_number_for_archive(value) if value else ''
-                    update_list.append({
-                        'range': f'{col_letter}{row_num}',
-                        'values': [[formatted_value]]
-                    })
-                    if formatted_value:
-                        print(f"    📈 [별도] {account}: {formatted_value}억원 (L{row_num})")
-        
-        except Exception as e:
-            print(f"  ⚠️ 기존 방식 데이터 매핑 실패: {str(e)}")
-        
-        return update_list
-
-    def _extract_data_from_connected_sheets(self, wb):
-        """연결 재무제표에서 데이터 추출 (D210000, D431410, D520000, D610000)"""
-        connected_data = {}
-        
-        connected_sheets = ['D210000', 'D431410', 'D520000', 'D610000']
-        for sheet_name in connected_sheets:
-            if sheet_name in wb.sheetnames:
-                sheet_data = self._extract_sheet_data(wb[sheet_name])
-                connected_data.update(sheet_data)
-        
-        return connected_data
-
-    def _extract_data_from_separate_sheets(self, wb):
-        """별도 재무제표에서 데이터 추출 (D210005, D431415, D520005, D610005)"""
-        separate_data = {}
-        
-        separate_sheets = ['D210005', 'D431415', 'D520005', 'D610005']
-        for sheet_name in separate_sheets:
-            if sheet_name in wb.sheetnames:
-                sheet_data = self._extract_sheet_data(wb[sheet_name])
-                separate_data.update(sheet_data)
-        
-        return separate_data
-
-    def _extract_sheet_data(self, worksheet):
-        """개별 워크시트에서 계정명과 값 추출"""
-        data = {}
-        
-        try:
-            for row in worksheet.iter_rows(values_only=True, max_row=200):
-                if row and row[0] and isinstance(row[0], str):
-                    account_name = str(row[0]).strip()
-                    
-                    # 값 추출 (2열 또는 3열에서)
-                    value = None
-                    for col_idx in [2, 1, 3]:
-                        if len(row) > col_idx and row[col_idx]:
-                            try:
-                                if isinstance(row[col_idx], (int, float)):
-                                    value = row[col_idx]
-                                    break
-                                elif isinstance(row[col_idx], str):
-                                    clean_val = str(row[col_idx]).replace(',', '').strip()
-                                    if clean_val and clean_val != '-':
-                                        value = float(clean_val)
-                                        break
-                            except:
-                                continue
-                    
-                    if account_name and value is not None:
-                        data[account_name] = value
-        
-        except Exception as e:
-            print(f"    ⚠️ 시트 데이터 추출 실패: {str(e)}")
-        
-        return data
-
     def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index, notes_type='connected'):
-        """XBRL 재무제표주석 Archive 업데이트 (실제 주석 시트 내용 배치 업데이트)"""
+        """XBRL 재무제표주석 Archive 업데이트 (실제 주석 시트 내용 배치 업데이트, 개선된 중분류 처리)"""
         try:
             print(f"  📝 XBRL 주석 데이터 분석 중... ({notes_type})")
             
@@ -1720,7 +901,7 @@ class DartExcelDownloader:
             report_date = datetime.now().strftime('%Y-%m-%d')
             quarter_info = self._get_quarter_info()
             
-            # STEP 1: 모든 주석 데이터를 메모리에서 준비
+            # STEP 1: 모든 주석 데이터를 메모리에서 준비 (개선된 중분류 처리)
             all_notes_account_data, all_notes_value_data = self._prepare_notes_data_for_batch_update(wb, notes_type)
             
             # STEP 2: 대용량 배치 업데이트 (최대 3번의 API 호출)
@@ -1757,7 +938,7 @@ class DartExcelDownloader:
             print(f"📋 상세 오류: {traceback.format_exc()}")
 
     def _prepare_notes_data_for_batch_update(self, wb, notes_type):
-        """주석 데이터를 배치 업데이트용으로 준비 (메모리에서 처리)"""
+        """주석 데이터를 배치 업데이트용으로 준비 (메모리에서 처리, 개선된 중분류 처리)"""
         try:
             print(f"  🔄 주석 배치 업데이트용 데이터 준비 중...")
             
@@ -1802,7 +983,7 @@ class DartExcelDownloader:
             return None, None
 
     def _extract_notes_sheet_data(self, worksheet, sheet_name):
-        """개별 주석 시트에서 A열 항목과 B열 값 추출"""
+        """개별 주석 시트에서 A열 항목과 B열 값 추출 (중분류 구조 고려)"""
         try:
             sheet_data = {
                 'title': '',
@@ -1818,8 +999,12 @@ class DartExcelDownloader:
             if not sheet_data['title']:
                 sheet_data['title'] = f"[{sheet_name}] 주석"
             
+            # 중분류 컨텍스트 추적을 위한 변수
+            current_category = ""
+            category_counter = {}  # 중분류별 카운터
+            
             # A열 항목들과 B열 값들 추출 (3행부터)
-            for row in worksheet.iter_rows(min_row=3, max_row=50, values_only=True):
+            for row_idx, row in enumerate(worksheet.iter_rows(min_row=3, max_row=100, values_only=True), start=3):
                 if not row or len(row) < 1:
                     continue
                     
@@ -1830,28 +1015,70 @@ class DartExcelDownloader:
                     
                 item_name = str(item_name).strip()
                 
-                # 유효한 항목명 필터링
-                if (len(item_name) > 1 and 
-                    not item_name.startswith(('[', '주석', 'Index', '구분')) and
-                    not item_name.endswith(('영역]', '항목')) and
-                    item_name not in ['', '-', '해당없음']):
+                # 빈 값이거나 무의미한 항목 제외
+                if (len(item_name) <= 1 or 
+                    item_name.startswith(('[', '주석', 'Index', '구분')) or
+                    item_name.endswith(('영역]', '항목')) or
+                    item_name in ['', '-', '해당없음']):
+                    continue
+                
+                # 중분류 감지 (보통 들여쓰기가 없고 굵은 글씨 또는 특정 패턴)
+                is_category = self._is_category_header(item_name, row_idx, worksheet)
+                
+                if is_category:
+                    # 새로운 중분류 발견
+                    current_category = item_name
+                    if current_category not in category_counter:
+                        category_counter[current_category] = 0
+                    category_counter[current_category] += 1
                     
-                    # B열 값 추출 (있는 경우만)
-                    value = None
-                    if len(row) > 1 and row[1]:
-                        if isinstance(row[1], (int, float)):
-                            value = row[1]
-                        elif isinstance(row[1], str):
-                            # 날짜나 기간 정보도 값으로 처리
-                            value_str = str(row[1]).strip()
-                            if value_str and value_str != '-':
-                                value = value_str
-                    
+                    # 중분류 제목도 Archive에 포함
                     sheet_data['items'].append({
-                        'name': item_name,
-                        'value': value,
-                        'formatted_value': self._format_notes_value(value) if value else ''
+                        'name': f"[중분류] {current_category}",
+                        'value': None,
+                        'formatted_value': '',
+                        'category': current_category,
+                        'is_category': True,
+                        'original_name': current_category
                     })
+                    continue
+                
+                # 세분류 처리
+                # B열 값 추출
+                value = None
+                if len(row) > 1 and row[1]:
+                    if isinstance(row[1], (int, float)):
+                        value = row[1]
+                    elif isinstance(row[1], str):
+                        value_str = str(row[1]).strip()
+                        if value_str and value_str != '-':
+                            value = value_str
+                
+                # 고유한 항목명 생성 (중분류 정보 포함)
+                if current_category:
+                    # 중분류가 있는 경우: "중분류_세분류" 형태
+                    unique_name = f"{current_category}_{item_name}"
+                    
+                    # 같은 중분류에서 같은 세분류가 중복되는 경우 번호 추가
+                    duplicate_count = len([item for item in sheet_data['items'] 
+                                         if item.get('category') == current_category and 
+                                            item.get('original_name') == item_name and
+                                            not item.get('is_category', False)])
+                    if duplicate_count > 0:
+                        unique_name = f"{current_category}_{item_name}_{duplicate_count + 1}"
+                else:
+                    # 중분류가 없는 경우: 기존 방식 + 행번호
+                    unique_name = f"{item_name}_행{row_idx}"
+                
+                sheet_data['items'].append({
+                    'name': unique_name,
+                    'original_name': item_name,  # 원본 이름 보존
+                    'value': value,
+                    'formatted_value': self._format_notes_value(value) if value else '',
+                    'category': current_category,
+                    'is_category': False,
+                    'row_number': row_idx
+                })
             
             return sheet_data if sheet_data['items'] else None
             
@@ -1859,8 +1086,70 @@ class DartExcelDownloader:
             print(f"      ⚠️ 주석 시트 {sheet_name} 데이터 추출 실패: {str(e)}")
             return None
 
+    def _is_category_header(self, item_name, row_idx, worksheet):
+        """항목이 중분류 헤더인지 판단"""
+        try:
+            # 방법 1: 패턴 기반 판단
+            category_patterns = [
+                '비용의 성격별',
+                '비용의 성격',
+                '성격별',
+                '매출채권',
+                '재고자산',
+                '유형자산',
+                '무형자산',
+                '투자자산',
+                '부채',
+                '자본',
+                '수익',
+                '비용',
+                '현금흐름',
+                '분류',
+                '구성내역',
+                '내역',
+                '내용',
+                '현황'
+            ]
+            
+            # 특정 키워드가 포함된 경우 중분류로 판단
+            for pattern in category_patterns:
+                if pattern in item_name:
+                    return True
+            
+            # 방법 2: 셀 스타일 확인 (가능한 경우)
+            # Excel에서 굵은 글씨나 특별한 스타일이 있는지 확인
+            try:
+                cell = worksheet.cell(row=row_idx, column=1)
+                if hasattr(cell, 'font') and cell.font and cell.font.bold:
+                    return True
+            except:
+                pass
+            
+            # 방법 3: 들여쓰기 확인
+            # 들여쓰기가 없거나 적은 경우 중분류로 판단
+            if not item_name.startswith((' ', '\t')):
+                # 다음 행들이 들여쓰기되어 있는지 확인
+                next_rows_indented = 0
+                for next_row_idx in range(row_idx + 1, min(row_idx + 6, worksheet.max_row + 1)):
+                    try:
+                        next_cell = worksheet.cell(row=next_row_idx, column=1).value
+                        if next_cell and isinstance(next_cell, str) and next_cell.startswith((' ', '\t')):
+                            next_rows_indented += 1
+                    except:
+                        continue
+                
+                # 다음 행들이 들여쓰기되어 있으면 현재 행은 중분류
+                if next_rows_indented >= 2:
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"        ⚠️ 중분류 판단 실패: {str(e)}")
+            return False
+
     def _place_notes_data_in_arrays(self, sheet_data, account_array, value_array, start_index):
-        """주석 시트 데이터를 배치 배열에 배치"""
+        """주석 시트 데이터를 배치 배열에 배치 (개선된 버전)"""
         try:
             if start_index >= len(account_array):
                 return 0
@@ -1873,12 +1162,20 @@ class DartExcelDownloader:
                 value_array[current_index][0] = ''
                 current_index += 1
             
-            # 각 항목들 배치
+            # 각 항목들 배치 (중분류/세분류 구분하여)
             for item in sheet_data['items']:
                 if current_index >= len(account_array):
                     break
-                    
-                account_array[current_index][0] = item['name']
+                
+                # 중분류인 경우 구분 표시
+                if item.get('is_category', False):
+                    display_name = f"● {item['original_name']}"
+                else:
+                    # 세분류인 경우 들여쓰기
+                    original_name = item.get('original_name', item['name'])
+                    display_name = f"  └ {original_name}"
+                
+                account_array[current_index][0] = display_name
                 value_array[current_index][0] = item['formatted_value']
                 current_index += 1
             
@@ -1922,16 +1219,6 @@ class DartExcelDownloader:
         except Exception as e:
             print(f"    ⚠️ 주석 값 포맷팅 오류 ({value}): {str(e)}")
             return str(value) if value else ''
-
-    def _fallback_individual_update(self, sheet, update_data):
-        """개별 업데이트 fallback"""
-        print(f"    🔄 개별 업데이트로 재시도...")
-        for item in update_data:
-            try:
-                sheet.update(item['range'], item['values'])
-                time.sleep(1)
-            except Exception as fallback_error:
-                print(f"      ⚠️ {item['range']} 업데이트 실패: {str(fallback_error)}")
 
     def _format_number_for_archive(self, value):
         """Archive용 숫자 포맷팅 (억원 단위)"""
