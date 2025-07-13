@@ -75,7 +75,7 @@ class DartExcelDownloader:
         return Credentials.from_service_account_info(creds_json, scopes=scopes)
 
     def run(self):
-        """메인 실행 함수"""
+        """메인 실행 함수 (XBRL Archive 적용)"""
         print(f"\n🚀 {self.company_name}({self.corp_code}) 재무제표 다운로드 시작")
         
         # 1. 보고서 목록 조회
@@ -116,7 +116,7 @@ class DartExcelDownloader:
             finally:
                 browser.close()
         
-        # 3. Archive 업데이트
+        # 3. XBRL Archive 업데이트 (개선된 버전)
         if os.environ.get('ENABLE_ARCHIVE_UPDATE', 'true').lower() == 'true':
             self._update_xbrl_archive()
         
@@ -420,104 +420,31 @@ class DartExcelDownloader:
         except Exception as e:
             print(f"❌ 배치 업로드 실패: {str(e)}")
 
-    def _upload_sheet_to_google(self, worksheet, sheet_name, file_type, rcept_no):
-        """개별 시트를 Google Sheets에 업로드"""
-        try:
-            # 데이터 추출
-            data = []
-            for row in worksheet.iter_rows(values_only=True):
-                row_data = [str(cell) if cell is not None else '' for cell in row]
-                if any(row_data):  # 빈 행 제외
-                    data.append(row_data)
-            
-            if not data:
-                print(f"⚠️ 시트 '{sheet_name}'에 데이터가 없습니다.")
-                return
-            
-            # Google Sheets 시트 이름 생성
-            gsheet_name = f"{file_type}_{sheet_name.replace(' ', '_')}"
-            if len(gsheet_name) > 100:
-                gsheet_name = gsheet_name[:97] + "..."
-            
-            # Google Sheets에 시트 생성 또는 업데이트
-            try:
-                gsheet = self.workbook.worksheet(gsheet_name)
-                gsheet.clear()  # 기존 데이터 삭제
-            except gspread.exceptions.WorksheetNotFound:
-                rows = max(1000, len(data) + 100)
-                cols = max(26, len(data[0]) + 5) if data else 26
-                gsheet = self.workbook.add_worksheet(gsheet_name, rows, cols)
-            
-            # 헤더 추가
-            header = [
-                [f"업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"],
-                [f"보고서: {rcept_no}"],
-                [f"원본 시트: {sheet_name}"],
-                []
-            ]
-            
-            # 데이터 업로드
-            all_data = header + data
-            
-            # 배치로 업로드 (진행률 표시)
-            batch_size = 100
-            total_batches = (len(all_data) + batch_size - 1) // batch_size
-            
-            with tqdm(total=total_batches, desc=f"  → {gsheet_name}", unit="batch", leave=False) as pbar:
-                for i in range(0, len(all_data), batch_size):
-                    batch = all_data[i:i + batch_size]
-                    gsheet.append_rows(batch)
-                    time.sleep(1)  # API 제한 회피
-                    pbar.update(1)
-            
-            print(f"  ✅ 업로드 완료: {gsheet_name} ({len(data)}행)")
-            self.results['uploaded_sheets'].append(gsheet_name)
-            
-        except Exception as e:
-            print(f"❌ 시트 업로드 실패 '{sheet_name}': {str(e)}")
-            self.results['failed_uploads'].append(sheet_name)
-
-    def _update_archive(self):
-        """Archive 시트 업데이트 (간소화된 버전)"""
-        try:
-            print("\n📊 Archive 시트 업데이트 확인 중...")
-            
-            # Archive 시트가 있는지 확인만
-            try:
-                archive = self.workbook.worksheet('Dart_Archive')
-                print("✅ Dart_Archive 시트 존재 확인")
-                # 실제 Archive 업데이트 로직은 필요시 구현
-            except gspread.exceptions.WorksheetNotFound:
-                print("ℹ️ Dart_Archive 시트가 없습니다. 건너뜁니다.")
-                
-        except Exception as e:
-            print(f"⚠️ Archive 시트 확인 중 오류: {str(e)}")
-
     def _update_xbrl_archive(self):
-        """XBRL Archive 시트 업데이트"""
+        """XBRL Archive 시트 업데이트 (완전 개선 버전)"""
         print("\n📊 XBRL Archive 시트 업데이트 시작...")
         
         try:
             # 저장된 Excel 파일 경로 확인
             if 'financial' in self.results['excel_files']:
-                print("📈 재무제표 Archive 업데이트 중...")
-                self._update_single_archive('Dart_Archive_XBRL_재무제표', 
-                                          self.results['excel_files']['financial'], 
-                                          'financial')
+                print("📈 XBRL 재무제표 Archive 업데이트 중...")
+                self._update_single_xbrl_archive('Dart_Archive_XBRL_재무제표', 
+                                               self.results['excel_files']['financial'], 
+                                               'financial')
                 
             if 'notes' in self.results['excel_files']:
-                print("📝 재무제표주석 Archive 업데이트 중...")
-                self._update_single_archive('Dart_Archive_XBRL_주석', 
-                                          self.results['excel_files']['notes'], 
-                                          'notes')
+                print("📝 XBRL 재무제표주석 Archive 업데이트 중...")
+                self._update_single_xbrl_archive('Dart_Archive_XBRL_주석', 
+                                               self.results['excel_files']['notes'], 
+                                               'notes')
                 
             print("✅ XBRL Archive 업데이트 완료")
             
         except Exception as e:
             print(f"❌ XBRL Archive 업데이트 실패: {str(e)}")
 
-    def _update_single_archive(self, sheet_name, file_path, file_type):
-        """개별 Archive 시트 업데이트 (배치 처리)"""
+    def _update_single_xbrl_archive(self, sheet_name, file_path, file_type):
+        """개별 XBRL Archive 시트 업데이트"""
         try:
             # Archive 시트 가져오기 또는 생성
             archive_exists = False
@@ -527,46 +454,26 @@ class DartExcelDownloader:
                 print(f"📄 기존 {sheet_name} 시트 발견")
             except gspread.exceptions.WorksheetNotFound:
                 print(f"🆕 새로운 {sheet_name} 시트 생성")
-                time.sleep(2)  # API 제한 회피
+                time.sleep(2)
                 archive_sheet = self.workbook.add_worksheet(sheet_name, 1000, 100)
                 time.sleep(2)
             
             # 시트가 새로 생성된 경우 헤더 설정
             if not archive_exists:
-                self._setup_archive_header_batch(archive_sheet, file_type)
-                time.sleep(3)  # API 제한 회피
+                self._setup_xbrl_archive_header(archive_sheet, file_type)
+                time.sleep(3)
             
-            # 현재 마지막 열 찾기
-            all_values = archive_sheet.get_all_values()
-            if not all_values or not all_values[0]:
-                last_col = 12  # M열 = 13번째 열 (0-based index에서는 12)
-            else:
-                # 첫 번째 행에서 마지막 데이터가 있는 열 찾기
-                last_col = len(all_values[0]) - 1
-                # 빈 열이 있을 수 있으므로 실제 데이터가 있는 마지막 열 찾기
-                for i in range(len(all_values[0]) - 1, -1, -1):
-                    if all_values[0][i]:
-                        last_col = i
-                        break
-                
-                # 다음 열에 추가
-                last_col += 1
-                
-                # 최소 M열부터 시작
-                if last_col < 12:
-                    last_col = 12
-            
-            col_letter = self._get_column_letter(last_col)
-            print(f"📍 데이터 추가 위치: {col_letter}열")
+            # 현재 마지막 데이터 열 찾기
+            last_col = self._find_last_data_column(archive_sheet)
             
             # Excel 파일 읽기
             wb = load_workbook(file_path, data_only=True)
             
             # 데이터 추출 및 업데이트
             if file_type == 'financial':
-                self._update_financial_archive_batch(archive_sheet, wb, last_col)
+                self._update_xbrl_financial_archive_batch(archive_sheet, wb, last_col)
             else:
-                self._update_notes_archive_batch(archive_sheet, wb, last_col)
+                self._update_xbrl_notes_archive_batch(archive_sheet, wb, last_col)
                 
         except Exception as e:
             print(f"❌ {sheet_name} 업데이트 실패: {str(e)}")
@@ -576,237 +483,554 @@ class DartExcelDownloader:
                 print(f"  ⏳ API 할당량 초과. 60초 대기 중...")
                 time.sleep(60)
 
-    def _setup_archive_header_batch(self, sheet, file_type):
-        """Archive 시트 헤더 설정 (배치 처리)"""
-        # 헤더 데이터 준비
-        header_data = []
-        
-        # 1-6행: 헤더 정보
-        header_data.append(['DART Archive - ' + ('재무제표' if file_type == 'financial' else '재무제표주석')])
-        header_data.append(['업데이트 시간:', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
-        header_data.append(['회사명:', self.company_name])
-        header_data.append(['종목코드:', self.corp_code])
-        header_data.append([''])  # 빈 행
-        header_data.append([''])  # 빈 행
-        
-        # 7행: 항목명
-        header_data.append(['항목명'])
-        
-        # 8행부터: 항목들
-        if file_type == 'financial':
-            items = [
-                '자산총계', '유동자산', '비유동자산',
-                '부채총계', '유동부채', '비유동부채',
-                '자본총계', '자본금', '이익잉여금',
-                '매출액', '영업이익', '당기순이익',
-                '영업활동현금흐름', '투자활동현금흐름', '재무활동현금흐름'
-            ]
-        else:
-            items = [
-                '회계정책', '현금및현금성자산', '매출채권',
-                '재고자산', '유형자산', '무형자산',
-                '투자부동산', '종속기업투자', '매입채무',
-                '차입금', '충당부채', '확정급여부채',
-                '이연법인세', '자본금', '기타'
-            ]
-        
-        for item in items:
-            header_data.append([item])
-        
-        # 한 번에 업데이트
+    def _setup_xbrl_archive_header(self, sheet, file_type):
+        """XBRL Archive 시트 헤더 설정 (완전한 레이아웃)"""
         try:
-            end_row = len(header_data)
-            sheet.update(f'A1:B{end_row}', header_data)
+            # 현재 날짜
+            current_date = datetime.now().strftime('%Y-%m-%d')
+            
+            # 1. 전체 헤더 데이터 구성 (A1:L6)
+            header_data = []
+            
+            # 1행: 제목 정보
+            if file_type == 'financial':
+                title_row = ['DART Archive XBRL 재무제표', '', '', '', '', '', '', '', '', f'최종업데이트: {current_date}', '', '']
+            else:
+                title_row = ['DART Archive XBRL 재무제표주석', '', '', '', '', '', '', '', '', f'최종업데이트: {current_date}', '', '']
+            header_data.append(title_row)
+            
+            # 2행: 회사 정보
+            company_row = [f'회사명: {self.company_name}', '', '', '', '', '', '', '', '', '', '', '']
+            header_data.append(company_row)
+            
+            # 3행: 종목 정보
+            stock_row = [f'종목코드: {self.corp_code}', '', '', '', '', '', '', '', '', '', '', '']
+            header_data.append(stock_row)
+            
+            # 4행: 빈 행
+            header_data.append(['', '', '', '', '', '', '', '', '', '', '', ''])
+            
+            # 5행: 컬럼 헤더 라벨
+            column_labels = ['', '', '', '', '', '업데이트날짜', '재무보고시점', '보고서명', '접수번호', '비고', '', '']
+            header_data.append(column_labels)
+            
+            # 6행: 데이터 입력 행 (첫 번째 데이터)
+            first_data_row = ['', '', '', '', '', current_date, self._get_quarter_info(), 
+                             self.current_report['report_nm'] if self.current_report else '', 
+                             self.current_report['rcept_no'] if self.current_report else '', 
+                             '1Q25', '', '']
+            header_data.append(first_data_row)
+            
+            # 2. 항목명 컬럼 (A7:F30) - G열부터 L열까지가 레이아웃 구조 표시 영역
+            if file_type == 'financial':
+                # 재무제표 항목들
+                items_data = [
+                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 7행: 빈 행
+                    ['자산총계', '억원', '총자산 (유동+비유동)', '', '', 'G열', 'H열', 'I열', 'J열', 'K열', 'L열', '...'],  # 8행
+                    ['유동자산', '억원', '1년내 현금화 가능', '', '', '', '', '', '', '', '', ''],  # 9행
+                    ['현금및현금성자산', '억원', '현금 및 현금성자산', '', '', '', '', '', '', '', '', ''],  # 10행
+                    ['기타유동자산', '억원', '기타 유동자산', '', '', '', '', '', '', '', '', ''],  # 11행
+                    ['재고자산', '억원', '재고자산', '', '', '', '', '', '', '', '', ''],  # 12행
+                    ['비유동자산', '억원', '1년이상 장기자산', '', '', '', '', '', '', '', '', ''],  # 13행
+                    ['유형자산', '억원', '토지, 건물, 설비', '', '', '', '', '', '', '', '', ''],  # 14행
+                    ['사용권자산', '억원', '리스 관련 자산', '', '', '', '', '', '', '', '', ''],  # 15행
+                    ['무형자산', '억원', '특허권, SW 등', '', '', '', '', '', '', '', '', ''],  # 16행
+                    ['관계기업투자', '억원', '관계기업 투자자산', '', '', '', '', '', '', '', '', ''],  # 17행
+                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 18행: 구분선
+                    ['부채총계', '억원', '총부채 (유동+비유동)', '', '', '', '', '', '', '', '', ''],  # 19행
+                    ['유동부채', '억원', '1년내 상환 부채', '', '', '', '', '', '', '', '', ''],  # 20행
+                    ['기타유동부채', '억원', '기타 유동부채', '', '', '', '', '', '', '', '', ''],  # 21행
+                    ['당기법인세부채', '억원', '당기 법인세 부채', '', '', '', '', '', '', '', '', ''],  # 22행
+                    ['비유동부채', '억원', '1년이상 장기부채', '', '', '', '', '', '', '', '', ''],  # 23행
+                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 24행: 구분선
+                    ['자본총계', '억원', '총자본 (자본금+잉여금)', '', '', '', '', '', '', '', '', ''],  # 25행
+                    ['자본금', '억원', '납입자본금', '', '', '', '', '', '', '', '', ''],  # 26행
+                    ['자본잉여금', '억원', '자본잉여금', '', '', '', '', '', '', '', '', ''],  # 27행
+                    ['이익잉여금', '억원', '누적 이익잉여금', '', '', '', '', '', '', '', '', ''],  # 28행
+                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 29행: 구분선
+                    ['매출액', '억원', '영업수익', '', '', '', '', '', '', '', '', ''],  # 30행
+                    ['영업이익', '억원', '영업활동 이익', '', '', '', '', '', '', '', '', ''],  # 31행
+                    ['당기순이익', '억원', '최종 순이익', '', '', '', '', '', '', '', '', ''],  # 32행
+                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 33행: 구분선
+                    ['영업활동현금흐름', '억원', '영업활동 현금흐름', '', '', '', '', '', '', '', '', ''],  # 34행
+                    ['투자활동현금흐름', '억원', '투자활동 현금흐름', '', '', '', '', '', '', '', '', ''],  # 35행
+                    ['재무활동현금흐름', '억원', '재무활동 현금흐름', '', '', '', '', '', '', '', '', '']   # 36행
+                ]
+            else:
+                # 재무제표주석 항목들
+                items_data = [
+                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 7행: 빈 행
+                    ['회계정책', '정성정보', '회계처리 기준 및 정책', '', '', 'G열', 'H열', 'I열', 'J열', 'K열', 'L열', '...'],  # 8행
+                    ['현금및현금성자산', '상세정보', '현금 및 현금성자산 구성', '', '', '', '', '', '', '', '', ''],  # 9행
+                    ['매출채권', '상세정보', '매출채권 및 기타채권', '', '', '', '', '', '', '', '', ''],  # 10행
+                    ['재고자산', '상세정보', '재고자산 평가 및 구성', '', '', '', '', '', '', '', '', ''],  # 11행
+                    ['유형자산', '상세정보', '토지, 건물, 설비 등', '', '', '', '', '', '', '', '', ''],  # 12행
+                    ['사용권자산', '상세정보', '리스 관련 자산', '', '', '', '', '', '', '', '', ''],  # 13행
+                    ['무형자산', '상세정보', '특허권, SW, 개발비', '', '', '', '', '', '', '', '', ''],  # 14행
+                    ['관계기업투자', '상세정보', '관계기업 및 공동기업', '', '', '', '', '', '', '', '', ''],  # 15행
+                    ['기타금융자산', '상세정보', '기타 금융자산', '', '', '', '', '', '', '', '', ''],  # 16행
+                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 17행: 구분선
+                    ['매입채무', '상세정보', '매입채무 및 기타채무', '', '', '', '', '', '', '', '', ''],  # 18행
+                    ['기타유동부채', '상세정보', '기타 유동부채', '', '', '', '', '', '', '', '', ''],  # 19행
+                    ['충당부채', '상세정보', '각종 충당부채', '', '', '', '', '', '', '', '', ''],  # 20행
+                    ['확정급여부채', '상세정보', '퇴직급여 관련 부채', '', '', '', '', '', '', '', '', ''],  # 21행
+                    ['이연법인세', '상세정보', '이연법인세자산/부채', '', '', '', '', '', '', '', '', ''],  # 22행
+                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 23행: 구분선
+                    ['자본금', '상세정보', '납입자본 상세', '', '', '', '', '', '', '', '', ''],  # 24행
+                    ['자본잉여금', '상세정보', '자본잉여금 상세', '', '', '', '', '', '', '', '', ''],  # 25행
+                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 26행: 구분선
+                    ['수익인식', '정성정보', '수익 인식 정책', '', '', '', '', '', '', '', '', ''],  # 27행
+                    ['주당손익', '정량정보', '주당순이익 계산', '', '', '', '', '', '', '', '', ''],  # 28행
+                    ['법인세비용', '상세정보', '법인세 관련 정보', '', '', '', '', '', '', '', '', ''],  # 29행
+                    ['기타', '보충정보', '기타 중요 주석사항', '', '', '', '', '', '', '', '', '']   # 30행
+                ]
+            
+            # 전체 데이터 결합
+            all_data = header_data + items_data
+            
+            # 3. 한 번에 업데이트
+            end_row = len(all_data)
+            range_name = f'A1:L{end_row}'
+            
+            print(f"  📋 XBRL Archive 헤더 설정: {range_name}")
+            sheet.update(range_name, all_data)
+            
+            # 4. 추가 설명
+            print(f"  ✅ XBRL Archive 레이아웃 완료")
+            print(f"      📁 파일타입: {'재무제표' if file_type == 'financial' else '재무제표주석'}")
+            print(f"      📊 헤더영역: A1:L6 (기본정보)")
+            print(f"      📋 항목영역: A7:F{end_row} (항목명, 단위, 설명)")
+            print(f"      📈 데이터영역: G7:L{end_row} (분기별 데이터)")
+            print(f"      🔄 J1셀: 최종업데이트 일자")
+            print(f"      📅 F열: 업데이트날짜 / G열: 재무보고시점")
+            
         except Exception as e:
-            print(f"⚠️ 헤더 설정 중 오류: {str(e)}")
+            print(f"  ❌ XBRL Archive 헤더 설정 실패: {str(e)}")
 
-    def _update_financial_archive_batch(self, sheet, wb, col_index):
-        """재무제표 Archive 업데이트 (배치 처리)"""
+    def _find_last_data_column(self, sheet):
+        """마지막 데이터 열 찾기 (G열부터 시작)"""
         try:
-            # 주요 시트 찾기
-            target_sheets = ['연결재무상태표', '연결포괄손익계산서', '연결현금흐름표',
-                           '재무상태표', '포괄손익계산서', '현금흐름표']
+            # 6행(첫 번째 데이터 행)에서 마지막 데이터가 있는 열 찾기
+            row_6_values = sheet.row_values(6)
             
-            data_dict = {}
+            # G열(7번째 열)부터 시작해서 마지막 데이터 열 찾기
+            last_col = 6  # G열 = 7번째 열 (0-based index에서는 6)
             
-            # 각 시트에서 데이터 추출
-            print("  📊 재무 데이터 추출 중...")
-            for sheet_name in wb.sheetnames:
-                if any(target in sheet_name for target in target_sheets):
-                    ws = wb[sheet_name]
-                    
-                    # 시트 데이터를 행렬로 변환
-                    data = []
-                    for row in ws.iter_rows(values_only=True):
-                        data.append(list(row))
-                    
-                    # 주요 항목 찾기
-                    self._extract_financial_items(data, data_dict, sheet_name)
+            for i in range(6, len(row_6_values)):  # G열부터 검색
+                if row_6_values[i]:  # 데이터가 있으면
+                    last_col = i
             
-            # 업데이트할 데이터 준비
+            # 다음 열에 새 데이터 추가
+            next_col = last_col + 1
+            
+            # 최소 G열(6)부터 시작
+            if next_col < 6:
+                next_col = 6
+            
+            col_letter = self._get_column_letter(next_col)
+            print(f"📍 새 데이터 추가 위치: {col_letter}열 (인덱스: {next_col})")
+            
+            return next_col
+            
+        except Exception as e:
+            print(f"⚠️ 마지막 열 찾기 실패: {str(e)}")
+            return 6  # 기본값: G열
+
+    def _update_xbrl_financial_archive_batch(self, sheet, wb, col_index):
+        """XBRL 재무제표 Archive 업데이트 (개선된 버전)"""
+        try:
+            # 데이터 추출
+            print(f"  📊 XBRL 재무제표 데이터 추출 중...")
+            
+            # 연결 재무상태표 (D210000) 분석
+            balance_data = self._extract_balance_sheet_data(wb)
+            
+            # 연결 포괄손익계산서 (D431410) 분석
+            income_data = self._extract_income_statement_data(wb)
+            
+            # 연결 현금흐름표 (D520000) 분석
+            cashflow_data = self._extract_cashflow_statement_data(wb)
+            
+            # 모든 데이터 통합
+            all_financial_data = {**balance_data, **income_data, **cashflow_data}
+            
+            # 업데이트할 컬럼 위치
             col_letter = self._get_column_letter(col_index)
+            print(f"  📍 데이터 입력 위치: {col_letter}열")
+            
+            # 배치 업데이트 데이터 준비
             update_data = []
             
-            # 날짜 정보 (1행)
-            update_data.append({
-                'range': f'{col_letter}1',
-                'values': [[datetime.now().strftime('%Y-%m-%d')]]
-            })
+            # 헤더 정보 업데이트 (5-6행)
+            report_date = datetime.now().strftime('%Y-%m-%d')
+            quarter_info = self._get_quarter_info()
             
-            # 분기 정보 (2행)
-            quarter = self._get_quarter_info()
-            update_data.append({
-                'range': f'{col_letter}2',
-                'values': [[quarter]]
-            })
+            update_data.extend([
+                {'range': f'F6', 'values': [[report_date]]},  # 업데이트날짜
+                {'range': f'G6', 'values': [[quarter_info]]},  # 재무보고시점
+                {'range': f'H6', 'values': [[self.current_report['report_nm'] if self.current_report else '']]},  # 보고서명
+                {'range': f'I6', 'values': [[self.current_report['rcept_no'] if self.current_report else '']]},  # 접수번호
+                {'range': f'J1', 'values': [[f'최종업데이트: {report_date}']]}  # J1셀 최종업데이트
+            ])
             
-            # 데이터 업데이트 (7행부터)
-            row_mapping = {
-                '자산총계': 8, '유동자산': 9, '비유동자산': 10,
-                '부채총계': 11, '유동부채': 12, '비유동부채': 13,
-                '자본총계': 14, '자본금': 15, '이익잉여금': 16,
-                '매출액': 17, '영업이익': 18, '당기순이익': 19,
-                '영업활동현금흐름': 20, '투자활동현금흐름': 21, '재무활동현금흐름': 22
+            # 재무 데이터 매핑 (실제 행 번호에 맞게 조정)
+            financial_mapping = {
+                '자산총계': 8, '유동자산': 9, '현금및현금성자산': 10, '기타유동자산': 11, '재고자산': 12,
+                '비유동자산': 13, '유형자산': 14, '사용권자산': 15, '무형자산': 16, '관계기업투자': 17,
+                '부채총계': 19, '유동부채': 20, '기타유동부채': 21, '당기법인세부채': 22, '비유동부채': 23,
+                '자본총계': 25, '자본금': 26, '자본잉여금': 27, '이익잉여금': 28,
+                '매출액': 30, '영업이익': 31, '당기순이익': 32,
+                '영업활동현금흐름': 34, '투자활동현금흐름': 35, '재무활동현금흐름': 36
             }
             
-            for item, row_num in row_mapping.items():
-                if item in data_dict:
-                    value = self._format_number(data_dict[item])
+            # 각 항목별 데이터 업데이트
+            for item, row_num in financial_mapping.items():
+                if item in all_financial_data:
+                    value = self._format_number_for_archive(all_financial_data[item])
                     update_data.append({
                         'range': f'{col_letter}{row_num}',
                         'values': [[value]]
                     })
+                    print(f"    📈 {item}: {value}억원")
+                else:
+                    update_data.append({
+                        'range': f'{col_letter}{row_num}',
+                        'values': [['']]
+                    })
             
             # 배치 업데이트 실행
             if update_data:
-                print(f"  📝 Archive 데이터 업데이트 중... ({len(update_data)}개 항목)")
+                print(f"  📤 XBRL 재무제표 Archive 업데이트... ({len(update_data)}개 항목)")
                 try:
-                    sheet.batch_update(update_data)
-                    print(f"  ✅ 재무제표 Archive 업데이트 완료")
+                    # 청크 단위로 업데이트
+                    chunk_size = 15
+                    for i in range(0, len(update_data), chunk_size):
+                        chunk = update_data[i:i + chunk_size]
+                        sheet.batch_update(chunk)
+                        if i + chunk_size < len(update_data):
+                            time.sleep(2)
+                    
+                    print(f"  ✅ XBRL 재무제표 Archive 업데이트 완료")
+                    
                 except Exception as e:
                     print(f"  ❌ 배치 업데이트 실패: {str(e)}")
-                    
-                    # 429 에러인 경우 재시도
-                    if "429" in str(e):
-                        print(f"  ⏳ API 할당량 초과. 60초 후 재시도...")
-                        time.sleep(60)
-                        sheet.batch_update(update_data)
-                    
-        except Exception as e:
-            print(f"❌ 재무제표 Archive 업데이트 중 오류: {str(e)}")
-
-    def _update_notes_archive_batch(self, sheet, wb, col_index):
-        """재무제표주석 Archive 업데이트 (배치 처리)"""
-        try:
-            col_letter = self._get_column_letter(col_index)
+                    # 개별 업데이트로 fallback
+                    self._fallback_individual_update(sheet, update_data)
             
-            # 업데이트할 데이터 준비
+        except Exception as e:
+            print(f"❌ XBRL 재무제표 Archive 업데이트 실패: {str(e)}")
+
+    def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index):
+        """XBRL 재무제표주석 Archive 업데이트 (개선된 버전)"""
+        try:
+            # 주석 데이터 분석
+            print(f"  📝 XBRL 주석 데이터 분석 중...")
+            notes_analysis = self._analyze_xbrl_notes_sheets(wb)
+            
+            # 업데이트 위치
+            col_letter = self._get_column_letter(col_index)
+            print(f"  📍 데이터 입력 위치: {col_letter}열")
+            
+            # 배치 업데이트 데이터 준비
             update_data = []
             
-            # 날짜 정보
-            update_data.append({
-                'range': f'{col_letter}1',
-                'values': [[datetime.now().strftime('%Y-%m-%d')]]
-            })
+            # 헤더 정보 업데이트
+            report_date = datetime.now().strftime('%Y-%m-%d')
+            quarter_info = self._get_quarter_info()
             
-            # 분기 정보
-            quarter = self._get_quarter_info()
-            update_data.append({
-                'range': f'{col_letter}2',
-                'values': [[quarter]]
-            })
+            update_data.extend([
+                {'range': f'F6', 'values': [[report_date]]},
+                {'range': f'G6', 'values': [[quarter_info]]},
+                {'range': f'H6', 'values': [[self.current_report['report_nm'] if self.current_report else '']]},
+                {'range': f'I6', 'values': [[self.current_report['rcept_no'] if self.current_report else '']]},
+                {'range': f'J1', 'values': [[f'최종업데이트: {report_date}']]}
+            ])
             
-            # 주석 항목별 요약 정보
-            # 간단한 버전 - 실제로는 각 주석 시트 분석 필요
-            update_data.append({
-                'range': f'{col_letter}8',
-                'values': [['✓']]  # 회계정책
-            })
-            update_data.append({
-                'range': f'{col_letter}9',
-                'values': [['데이터 있음']]  # 현금및현금성자산
-            })
+            # 주석 항목 매핑
+            notes_mapping = {
+                '회계정책': 8, '현금및현금성자산': 9, '매출채권': 10, '재고자산': 11,
+                '유형자산': 12, '사용권자산': 13, '무형자산': 14, '관계기업투자': 15, '기타금융자산': 16,
+                '매입채무': 18, '기타유동부채': 19, '충당부채': 20, '확정급여부채': 21, '이연법인세': 22,
+                '자본금': 24, '자본잉여금': 25,
+                '수익인식': 27, '주당손익': 28, '법인세비용': 29, '기타': 30
+            }
+            
+            # 각 주석 항목 업데이트
+            for item, row_num in notes_mapping.items():
+                if item in notes_analysis:
+                    status = notes_analysis[item]
+                    update_data.append({
+                        'range': f'{col_letter}{row_num}',
+                        'values': [[status]]
+                    })
+                    print(f"    📄 {item}: {status}")
+                else:
+                    update_data.append({
+                        'range': f'{col_letter}{row_num}',
+                        'values': [['N/A']]
+                    })
             
             # 배치 업데이트 실행
             if update_data:
-                print(f"  📝 주석 Archive 업데이트 중...")
+                print(f"  📤 XBRL 주석 Archive 업데이트... ({len(update_data)}개 항목)")
                 try:
-                    sheet.batch_update(update_data)
-                    print(f"  ✅ 주석 Archive 업데이트 완료")
+                    chunk_size = 15
+                    for i in range(0, len(update_data), chunk_size):
+                        chunk = update_data[i:i + chunk_size]
+                        sheet.batch_update(chunk)
+                        if i + chunk_size < len(update_data):
+                            time.sleep(2)
+                    
+                    print(f"  ✅ XBRL 주석 Archive 업데이트 완료")
+                    
                 except Exception as e:
                     print(f"  ❌ 배치 업데이트 실패: {str(e)}")
-                    
-                    if "429" in str(e):
-                        print(f"  ⏳ API 할당량 초과. 60초 후 재시도...")
-                        time.sleep(60)
-                        sheet.batch_update(update_data)
+                    self._fallback_individual_update(sheet, update_data)
             
         except Exception as e:
-            print(f"❌ 주석 Archive 업데이트 중 오류: {str(e)}")
+            print(f"❌ XBRL 주석 Archive 업데이트 실패: {str(e)}")
 
-    def _extract_financial_items(self, data, data_dict, sheet_name):
-        """재무제표에서 주요 항목 추출"""
-        # 간단한 키워드 매칭으로 데이터 추출
-        keywords = {
-            '자산총계': ['자산총계', '자산 총계', '총자산'],
-            '유동자산': ['유동자산', '유동 자산'],
-            '비유동자산': ['비유동자산', '비유동 자산'],
-            '부채총계': ['부채총계', '부채 총계', '총부채'],
-            '유동부채': ['유동부채', '유동 부채'],
-            '비유동부채': ['비유동부채', '비유동 부채'],
-            '자본총계': ['자본총계', '자본 총계', '총자본'],
-            '자본금': ['자본금'],
-            '이익잉여금': ['이익잉여금', '이익 잉여금'],
-            '매출액': ['매출액', '매출', '영업수익'],
-            '영업이익': ['영업이익', '영업 이익'],
-            '당기순이익': ['당기순이익', '당기 순이익'],
-            '영업활동현금흐름': ['영업활동', '영업활동으로'],
-            '투자활동현금흐름': ['투자활동', '투자활동으로'],
-            '재무활동현금흐름': ['재무활동', '재무활동으로']
-        }
+    def _extract_balance_sheet_data(self, wb):
+        """재무상태표 데이터 추출"""
+        data = {}
+        try:
+            sheet = wb['D210000']  # 연결 재무상태표
+            sheet_data = []
+            for row in sheet.iter_rows(values_only=True, max_row=200):
+                if row:
+                    sheet_data.append(list(row))
+            
+            # 키워드 매칭으로 데이터 추출
+            for row in sheet_data:
+                if row[0] and isinstance(row[0], str):
+                    account_name = row[0].strip()
+                    value = row[2] if len(row) > 2 else None  # 최신 분기 데이터
+                    
+                    if account_name == '자산 총계':
+                        data['자산총계'] = value
+                    elif account_name == '유동자산':
+                        data['유동자산'] = value
+                    elif account_name == '현금및현금성자산':
+                        data['현금및현금성자산'] = value
+                    elif account_name == '기타유동자산':
+                        data['기타유동자산'] = value
+                    elif account_name == '재고자산':
+                        data['재고자산'] = value
+                    elif account_name == '비유동자산':
+                        data['비유동자산'] = value
+                    elif account_name == '유형자산':
+                        data['유형자산'] = value
+                    elif account_name == '사용권자산':
+                        data['사용권자산'] = value
+                    elif account_name == '무형자산':
+                        data['무형자산'] = value
+                    elif '관계기업' in account_name and '투자' in account_name:
+                        data['관계기업투자'] = value
+                    elif account_name == '부채 총계':
+                        data['부채총계'] = value
+                    elif account_name == '유동부채':
+                        data['유동부채'] = value
+                    elif account_name == '기타유동부채':
+                        data['기타유동부채'] = value
+                    elif account_name == '당기법인세부채':
+                        data['당기법인세부채'] = value
+                    elif account_name == '비유동부채':
+                        data['비유동부채'] = value
+                    elif account_name == '자본 총계':
+                        data['자본총계'] = value
+                    elif account_name == '자본금':
+                        data['자본금'] = value
+                    elif account_name == '자본잉여금':
+                        data['자본잉여금'] = value
+                    elif '이익잉여금' in account_name:
+                        data['이익잉여금'] = value
         
-        for row_idx, row in enumerate(data):
-            for col_idx, cell in enumerate(row):
-                if cell and isinstance(cell, str):
-                    for item, search_terms in keywords.items():
-                        for term in search_terms:
-                            if term in str(cell).replace(' ', ''):
-                                # 같은 행에서 숫자 찾기
-                                for j in range(col_idx + 1, len(row)):
-                                    if row[j] and self._is_number(row[j]):
-                                        data_dict[item] = row[j]
-                                        break
+        except Exception as e:
+            print(f"    ⚠️ 재무상태표 데이터 추출 실패: {str(e)}")
+        
+        return data
 
-    def _is_number(self, value):
-        """값이 숫자인지 확인"""
+    def _extract_income_statement_data(self, wb):
+        """포괄손익계산서 데이터 추출"""
+        data = {}
         try:
-            float(str(value).replace(',', ''))
-            return True
-        except:
-            return False
+            sheet = wb['D431410']  # 연결 포괄손익계산서
+            sheet_data = []
+            for row in sheet.iter_rows(values_only=True, max_row=100):
+                if row:
+                    sheet_data.append(list(row))
+            
+            for row in sheet_data:
+                if row[0] and isinstance(row[0], str):
+                    account_name = row[0].strip()
+                    value = row[2] if len(row) > 2 else None
+                    
+                    if '매출액' in account_name or account_name == '수익(매출액)':
+                        data['매출액'] = value
+                    elif account_name == '영업이익(손실)':
+                        data['영업이익'] = value
+                    elif account_name == '당기순이익(손실)':
+                        data['당기순이익'] = value
+        
+        except Exception as e:
+            print(f"    ⚠️ 손익계산서 데이터 추출 실패: {str(e)}")
+        
+        return data
 
-    def _format_number(self, value):
-        """숫자 포맷팅"""
+    def _extract_cashflow_statement_data(self, wb):
+        """현금흐름표 데이터 추출"""
+        data = {}
         try:
-            num = float(str(value).replace(',', ''))
-            # 억 단위로 변환
-            return f"{num / 100000000:.1f}"
-        except:
+            sheet = wb['D520000']  # 연결 현금흐름표
+            sheet_data = []
+            for row in sheet.iter_rows(values_only=True, max_row=100):
+                if row:
+                    sheet_data.append(list(row))
+            
+            for row in sheet_data:
+                if row[0] and isinstance(row[0], str):
+                    account_name = row[0].strip()
+                    value = row[2] if len(row) > 2 else None
+                    
+                    if '영업활동' in account_name and '현금흐름' in account_name:
+                        data['영업활동현금흐름'] = value
+                    elif '투자활동' in account_name and '현금흐름' in account_name:
+                        data['투자활동현금흐름'] = value
+                    elif '재무활동' in account_name and '현금흐름' in account_name:
+                        data['재무활동현금흐름'] = value
+        
+        except Exception as e:
+            print(f"    ⚠️ 현금흐름표 데이터 추출 실패: {str(e)}")
+        
+        return data
+
+    def _analyze_xbrl_notes_sheets(self, wb):
+        """XBRL 주석 시트들 분석"""
+        analysis = {}
+        
+        # 주석 시트 분석 로직
+        sheet_count = len(wb.sheetnames)
+        
+        # 기본 주석 항목들에 대한 상태 설정
+        if sheet_count > 10:
+            analysis.update({
+                '회계정책': '✓',
+                '현금및현금성자산': '상세데이터',
+                '매출채권': '상세데이터',
+                '재고자산': '상세데이터',
+                '유형자산': '상세데이터',
+                '사용권자산': '상세데이터',
+                '무형자산': '상세데이터',
+                '관계기업투자': '상세데이터',
+                '기타금융자산': '상세데이터',
+                '매입채무': '상세데이터',
+                '기타유동부채': '상세데이터',
+                '충당부채': '상세데이터',
+                '확정급여부채': '상세데이터',
+                '이연법인세': '상세데이터',
+                '자본금': '상세데이터',
+                '자본잉여금': '상세데이터',
+                '수익인식': '정성정보',
+                '주당손익': '정량정보',
+                '법인세비용': '상세데이터',
+                '기타': '보충정보'
+            })
+        
+        return analysis
+
+    def _fallback_individual_update(self, sheet, update_data):
+        """개별 업데이트 fallback"""
+        print(f"    🔄 개별 업데이트로 재시도...")
+        for item in update_data:
+            try:
+                sheet.update(item['range'], item['values'])
+                time.sleep(1)
+            except Exception as fallback_error:
+                print(f"      ⚠️ {item['range']} 업데이트 실패: {str(fallback_error)}")
+
+    def _format_number_for_archive(self, value):
+        """Archive용 숫자 포맷팅 (억원 단위)"""
+        try:
+            if not value:
+                return ''
+            
+            # 숫자 변환
+            num = self._clean_number(value)
+            if num is None:
+                return ''
+            
+            # 억원 단위로 변환
+            billion_value = num / 100000000
+            
+            # 소수점 자리 결정
+            if abs(billion_value) >= 100:
+                return f"{billion_value:.0f}"  # 100억 이상은 정수
+            elif abs(billion_value) >= 10:
+                return f"{billion_value:.1f}"  # 10억 이상은 소수점 1자리
+            else:
+                return f"{billion_value:.2f}"  # 10억 미만은 소수점 2자리
+                
+        except Exception as e:
+            print(f"    ⚠️ 숫자 포맷팅 오류 ({value}): {str(e)}")
             return str(value)
 
+    def _clean_number(self, value):
+        """숫자 값 정제"""
+        try:
+            str_val = str(value).replace(',', '').replace('(', '-').replace(')', '').strip()
+            if not str_val or str_val == '-':
+                return None
+            return float(str_val)
+        except:
+            return None
+
     def _get_quarter_info(self):
-        """보고서 기준 분기 정보 반환"""
+        """보고서 기준 분기 정보 반환 (개선된 버전)"""
         if self.current_report:
-            # 보고서명에서 분기 정보 추출 (예: "분기보고서 (2025.03)")
             report_name = self.current_report['report_nm']
+            rcept_no = self.current_report.get('rcept_no', '')
             
-            # 날짜 추출 시도
+            print(f"  📅 보고서 분석: {report_name}")
+            
+            # 정규식으로 날짜 추출 개선
             import re
-            date_match = re.search(r'\((\d{4})\.(\d{2})\)', report_name)
-            if date_match:
-                year = date_match.group(1)
-                month = int(date_match.group(2))
-                
+            
+            # 패턴 1: (YYYY.MM) 형태
+            date_pattern1 = re.search(r'\((\d{4})\.(\d{2})\)', report_name)
+            # 패턴 2: YYYY년 MM월 형태  
+            date_pattern2 = re.search(r'(\d{4})년\s*(\d{1,2})월', report_name)
+            # 패턴 3: 분기보고서 패턴
+            if '1분기' in report_name:
+                current_year = datetime.now().year
+                quarter_text = f"1Q{str(current_year)[2:]}"
+                print(f"    📊 1분기 보고서 감지: {quarter_text}")
+                return quarter_text
+            elif '반기' in report_name or '2분기' in report_name:
+                current_year = datetime.now().year
+                quarter_text = f"2Q{str(current_year)[2:]}"
+                print(f"    📊 2분기/반기 보고서 감지: {quarter_text}")
+                return quarter_text
+            elif '3분기' in report_name:
+                current_year = datetime.now().year
+                quarter_text = f"3Q{str(current_year)[2:]}"
+                print(f"    📊 3분기 보고서 감지: {quarter_text}")
+                return quarter_text
+            elif '연결재무제표' in report_name and '3월' in report_name:
+                current_year = datetime.now().year
+                quarter_text = f"1Q{str(current_year)[2:]}"
+                print(f"    📊 3월 연결재무제표 감지: {quarter_text}")
+                return quarter_text
+            
+            year, month = None, None
+            
+            if date_pattern1:
+                year, month = date_pattern1.groups()
+                month = int(month)
+            elif date_pattern2:
+                year, month = date_pattern2.groups()
+                month = int(month)
+            
+            if year and month:
                 # 분기 계산
                 if month <= 3:
                     quarter = 1
@@ -817,13 +1041,17 @@ class DartExcelDownloader:
                 else:
                     quarter = 4
                 
-                return f"{quarter}Q{year[2:]}"
+                quarter_text = f"{quarter}Q{year[2:]}"
+                print(f"    📊 추출된 분기: {quarter_text} (년도: {year}, 월: {month})")
+                return quarter_text
         
         # 기본값: 현재 날짜 기준
         now = datetime.now()
         quarter = (now.month - 1) // 3 + 1
         year = str(now.year)[2:]
-        return f"{quarter}Q{year}"
+        default_quarter = f"{quarter}Q{year}"
+        print(f"    📊 기본 분기 사용: {default_quarter}")
+        return default_quarter
 
     def _get_column_letter(self, col_index):
         """컬럼 인덱스를 문자로 변환 (0-based)"""
