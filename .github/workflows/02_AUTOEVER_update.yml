@@ -70,8 +70,13 @@ jobs:
             pip install -r requirements.txt
           else
             pip install gspread google-auth google-auth-oauthlib google-auth-httplib2
-            pip install opendartreader beautifulsoup4 pandas requests openpyxl
+            pip install opendartreader pandas openpyxl playwright requests
           fi
+          
+          # Playwright 브라우저 설치
+          echo "🌐 Playwright 브라우저 설치..."
+          playwright install chromium
+          playwright install-deps chromium
           
       - name: Verify environment
         run: |
