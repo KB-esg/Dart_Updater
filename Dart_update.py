@@ -514,11 +514,24 @@ class DartExcelDownloader:
             column_labels = ['', '', '', '', '', '업데이트날짜', '재무보고시점', '보고서명', '접수번호', '비고', '', '']
             header_data.append(column_labels)
             
-            # 6행: 데이터 입력 행 (첫 번째 데이터)
+            # 6행: 데이터 입력 행 (첫 번째 데이터) - pandas Series 안전 처리
+            report_name = ''
+            rcept_no = ''
+            try:
+                if self.current_report is not None:
+                    if hasattr(self.current_report, 'get'):
+                        # pandas Series 또는 dict인 경우
+                        report_name = self.current_report.get('report_nm', '')
+                        rcept_no = self.current_report.get('rcept_no', '')
+                    else:
+                        # 기타 타입인 경우 문자열로 변환
+                        report_name = str(self.current_report)
+                        rcept_no = ''
+            except Exception as e:
+                print(f"    ⚠️ 보고서 정보 추출 실패: {str(e)}")
+            
             first_data_row = ['', '', '', '', '', current_date, self._get_quarter_info(), 
-                             self.current_report['report_nm'] if self.current_report else '', 
-                             self.current_report['rcept_no'] if self.current_report else '', 
-                             '1Q25', '', '']
+                             str(report_name), str(rcept_no), '1Q25', '', '']
             header_data.append(first_data_row)
             
             # 2. 항목명 컬럼 (A7:F30) - G열부터 L열까지가 레이아웃 구조 표시 영역
@@ -1013,12 +1026,27 @@ class DartExcelDownloader:
             report_date = datetime.now().strftime('%Y-%m-%d')
             quarter_info = self._get_quarter_info()
             
-            # 헤더 업데이트 (6행)
+            # 헤더 업데이트 (6행) - pandas Series 안전 처리
+            report_name = ''
+            rcept_no = ''
+            try:
+                if self.current_report is not None:
+                    if hasattr(self.current_report, 'get'):
+                        # pandas Series 또는 dict인 경우
+                        report_name = self.current_report.get('report_nm', '')
+                        rcept_no = self.current_report.get('rcept_no', '')
+                    else:
+                        # 기타 타입인 경우 문자열로 변환
+                        report_name = str(self.current_report)
+                        rcept_no = ''
+            except Exception as e:
+                print(f"    ⚠️ 보고서 정보 추출 실패: {str(e)}")
+            
             update_data.extend([
                 {'range': f'F6', 'values': [[report_date]]},
                 {'range': f'G6', 'values': [[quarter_info]]},
-                {'range': f'H6', 'values': [[self.current_report['report_nm'] if self.current_report else '']]},
-                {'range': f'I6', 'values': [[self.current_report['rcept_no'] if self.current_report else '']]},
+                {'range': f'H6', 'values': [[str(report_name)]]},
+                {'range': f'I6', 'values': [[str(rcept_no)]]},
                 {'range': f'J1', 'values': [[f'최종업데이트: {report_date}']]}
             ])
             
@@ -1094,11 +1122,27 @@ class DartExcelDownloader:
             report_date = datetime.now().strftime('%Y-%m-%d')
             quarter_info = self._get_quarter_info()
             
+            # 헤더 정보 업데이트 - pandas Series 안전 처리
+            report_name = ''
+            rcept_no = ''
+            try:
+                if self.current_report is not None:
+                    if hasattr(self.current_report, 'get'):
+                        # pandas Series 또는 dict인 경우
+                        report_name = self.current_report.get('report_nm', '')
+                        rcept_no = self.current_report.get('rcept_no', '')
+                    else:
+                        # 기타 타입인 경우 문자열로 변환
+                        report_name = str(self.current_report)
+                        rcept_no = ''
+            except Exception as e:
+                print(f"    ⚠️ 보고서 정보 추출 실패: {str(e)}")
+            
             update_data.extend([
                 {'range': f'F6', 'values': [[report_date]]},
                 {'range': f'G6', 'values': [[quarter_info]]},
-                {'range': f'H6', 'values': [[self.current_report['report_nm'] if self.current_report else '']]},
-                {'range': f'I6', 'values': [[self.current_report['rcept_no'] if self.current_report else '']]},
+                {'range': f'H6', 'values': [[str(report_name)]]},
+                {'range': f'I6', 'values': [[str(rcept_no)]]},
                 {'range': f'J1', 'values': [[f'최종업데이트: {report_date}']]}
             ])
             
