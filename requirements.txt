@@ -11,6 +11,7 @@ opendartreader>=0.2.3
 beautifulsoup4>=4.12.0
 requests>=2.31.0
 lxml>=4.9.0
+playwright
 
 # 데이터 처리
 pandas>=2.1.0
