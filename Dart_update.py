@@ -85,10 +85,20 @@ class DartExcelDownloader:
         # 2. Playwright로 각 보고서 처리
         with sync_playwright() as p:
             # 브라우저 시작 (헤드리스 모드)
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    '--disable-blink-features=AutomationControlled',
+                    '--no-sandbox',
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage'
+                ]
+            )
             context = browser.new_context(
                 accept_downloads=True,
-                locale='ko-KR'
+                locale='ko-KR',
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             )
             
             try:
@@ -154,8 +164,8 @@ class DartExcelDownloader:
             
             print("🖱️ 다운로드 버튼 클릭")
             
-            # 새 창 대기
-            with context.expect_popup() as popup_info:
+            # 새 창 대기 - page.expect_popup() 사용
+            with page.expect_popup() as popup_info:
                 download_button.click()
             
             popup = popup_info.value
@@ -176,16 +186,35 @@ class DartExcelDownloader:
     def _download_excel_files(self, popup_page, rcept_no):
         """팝업 페이지에서 Excel 파일 다운로드"""
         try:
-            # 재무제표 다운로드
-            financial_link = popup_page.locator('a.btnFile[href*="financialStatements"]').first
-            if financial_link.is_visible():
+            # 페이지 로딩 대기
+            popup_page.wait_for_timeout(2000)
+            
+            # 현재 URL 확인
+            print(f"📍 팝업 페이지 URL: {popup_page.url}")
+            
+            # 다운로드 링크들 찾기
+            download_links = popup_page.locator('a.btnFile')
+            link_count = download_links.count()
+            print(f"📄 다운로드 가능한 파일 수: {link_count}개")
+            
+            # 모든 링크의 href 확인 (디버깅용)
+            for i in range(link_count):
+                href = download_links.nth(i).get_attribute('href')
+                print(f"  - 링크 {i+1}: {href}")
+            
+            # 재무제표 다운로드 (첫 번째 xlsx)
+            if link_count >= 1:
                 print("📥 재무제표 다운로드 중...")
                 
                 # 다운로드 대기 설정
                 with popup_page.expect_download() as download_info:
-                    financial_link.click()
+                    download_links.nth(0).click()  # 첫 번째 버튼 클릭
                 
                 download = download_info.value
+                
+                # 원본 파일명 확인
+                suggested_filename = download.suggested_filename
+                print(f"  원본 파일명: {suggested_filename}")
                 
                 # 파일 저장
                 file_path = os.path.join(self.download_dir, f"재무제표_{rcept_no}.xlsx")
@@ -196,16 +225,22 @@ class DartExcelDownloader:
                 
                 # Google Sheets에 업로드
                 self._upload_excel_to_sheets(file_path, "재무제표", rcept_no)
+                
+                # 다음 다운로드 전 잠시 대기
+                popup_page.wait_for_timeout(2000)
             
-            # 재무제표주석 다운로드
-            notes_link = popup_page.locator('a.btnFile[href*="notes"]').first
-            if notes_link.is_visible():
+            # 재무제표주석 다운로드 (두 번째 xlsx)
+            if link_count >= 2:
                 print("📥 재무제표주석 다운로드 중...")
                 
                 with popup_page.expect_download() as download_info:
-                    notes_link.click()
+                    download_links.nth(1).click()  # 두 번째 버튼 클릭
                 
                 download = download_info.value
+                
+                # 원본 파일명 확인
+                suggested_filename = download.suggested_filename
+                print(f"  원본 파일명: {suggested_filename}")
                 
                 # 파일 저장
                 file_path = os.path.join(self.download_dir, f"재무제표주석_{rcept_no}.xlsx")
@@ -219,6 +254,8 @@ class DartExcelDownloader:
                 
         except Exception as e:
             print(f"❌ Excel 다운로드 실패: {str(e)}")
+            import traceback
+            traceback.print_exc()
             self.results['failed_downloads'].append(f"Excel_{rcept_no}")
 
     def _upload_excel_to_sheets(self, file_path, file_type, rcept_no):
@@ -290,23 +327,20 @@ class DartExcelDownloader:
             self.results['failed_uploads'].append(sheet_name)
 
     def _update_archive(self):
-        """Archive 시트 업데이트 (기존 로직 유지)"""
+        """Archive 시트 업데이트 (간소화된 버전)"""
         try:
-            print("\n📊 Archive 시트 업데이트 시작...")
-            archive = self.workbook.worksheet('Dart_Archive')
+            print("\n📊 Archive 시트 업데이트 확인 중...")
             
-            sheet_values = archive.get_all_values()
-            if not sheet_values:
-                print("⚠️ Dart_Archive 시트가 비어있습니다.")
-                return
-            
-            # 기존 Archive 업데이트 로직
-            print("✅ Archive 시트 업데이트 완료")
-            
-        except gspread.exceptions.WorksheetNotFound:
-            print("ℹ️ Dart_Archive 시트가 없습니다.")
+            # Archive 시트가 있는지 확인만
+            try:
+                archive = self.workbook.worksheet('Dart_Archive')
+                print("✅ Dart_Archive 시트 존재 확인")
+                # 실제 Archive 업데이트 로직은 필요시 구현
+            except gspread.exceptions.WorksheetNotFound:
+                print("ℹ️ Dart_Archive 시트가 없습니다. 건너뜁니다.")
+                
         except Exception as e:
-            print(f"⚠️ Archive 시트 처리 실패: {str(e)}")
+            print(f"⚠️ Archive 시트 확인 중 오류: {str(e)}")
 
     def _cleanup_downloads(self):
         """다운로드 폴더 정리"""
