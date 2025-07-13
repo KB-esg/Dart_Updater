@@ -2,33 +2,16 @@ import os
 from datetime import datetime, timedelta
 import json
 import time
-import re
 import gspread
 from google.oauth2.service_account import Credentials
 import OpenDartReader
-import requests
-from bs4 import BeautifulSoup
 import pandas as pd
-from urllib.parse import urljoin
-import io
 from openpyxl import load_workbook
-
-# HTML 테이블 파서 대안 구현
-try:
-    from html_table_parser import parser_functions as parser
-    HTML_PARSER_AVAILABLE = True
-    print("✅ html_table_parser 로드 성공")
-except ImportError:
-    try:
-        from html_table_parser_python3 import parser_functions as parser
-        HTML_PARSER_AVAILABLE = True
-        print("✅ html_table_parser_python3 로드 성공")
-    except ImportError:
-        HTML_PARSER_AVAILABLE = False
-        print("⚠️ HTML 파서 패키지가 없습니다. 내장 파서를 사용합니다.")
+from playwright.sync_api import sync_playwright
+import shutil
 
 class DartExcelDownloader:
-    """DART 재무제표 Excel 다운로드 및 Google Sheets 업로드"""
+    """DART 재무제표 Excel 다운로드 및 Google Sheets 업로드 (Playwright 사용)"""
     
     def __init__(self, company_config):
         """초기화"""
@@ -50,6 +33,10 @@ class DartExcelDownloader:
         # 텔레그램 설정
         self.telegram_bot_token = os.environ.get('TELEGRAM_BOT_TOKEN')
         self.telegram_channel_id = os.environ.get('TELEGRAM_CHANNEL_ID')
+        
+        # 다운로드 폴더 설정
+        self.download_dir = os.path.join(os.getcwd(), 'downloads')
+        os.makedirs(self.download_dir, exist_ok=True)
         
         # 처리 결과 추적
         self.results = {
@@ -95,9 +82,22 @@ class DartExcelDownloader:
         print(f"📋 발견된 보고서: {len(reports)}개")
         self.results['total_reports'] = len(reports)
         
-        # 2. 각 보고서 처리
-        for _, report in reports.iterrows():
-            self._process_report(report)
+        # 2. Playwright로 각 보고서 처리
+        with sync_playwright() as p:
+            # 브라우저 시작 (헤드리스 모드)
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(
+                accept_downloads=True,
+                locale='ko-KR'
+            )
+            
+            try:
+                # 각 보고서 처리
+                for _, report in reports.iterrows():
+                    self._process_report_with_browser(context, report)
+                    
+            finally:
+                browser.close()
         
         # 3. Archive 업데이트 (선택적)
         if os.environ.get('ENABLE_ARCHIVE_UPDATE', 'true').lower() == 'true':
@@ -105,6 +105,9 @@ class DartExcelDownloader:
         
         # 4. 결과 요약
         self._print_summary()
+        
+        # 5. 다운로드 폴더 정리
+        self._cleanup_downloads()
 
     def _get_recent_reports(self):
         """최근 보고서 목록 조회"""
@@ -128,108 +131,110 @@ class DartExcelDownloader:
         print(f"📅 기본 날짜 범위 (최근 3개월): {date_range[0]} ~ {date_range[1]}")
         return date_range
 
-    def _process_report(self, report):
-        """개별 보고서 처리"""
+    def _process_report_with_browser(self, context, report):
+        """브라우저로 개별 보고서 처리"""
         print(f"\n📄 보고서 처리: {report['report_nm']} (접수번호: {report['rcept_no']})")
         
-        # 다운로드 URL 정보 가져오기
-        download_info = self._get_download_info(report['rcept_no'])
-        if not download_info:
-            print("❌ 다운로드 정보를 찾을 수 없습니다.")
-            self.results['failed_downloads'].append(report['rcept_no'])
-            return
+        page = context.new_page()
         
-        # 재무제표 다운로드 및 업로드
-        if download_info.get('financial_statements_url'):
-            self._download_and_upload_excel(
-                download_info['financial_statements_url'],
-                '재무제표',
-                report['rcept_no']
-            )
-        
-        # 재무제표주석 다운로드 및 업로드
-        if download_info.get('notes_url'):
-            self._download_and_upload_excel(
-                download_info['notes_url'],
-                '재무제표주석',
-                report['rcept_no']
-            )
-
-    def _get_download_info(self, rcept_no):
-        """다운로드 URL 정보 추출"""
         try:
-            # XBRL 뷰어 페이지 접근
-            viewer_url = f"https://opendart.fss.or.kr/xbrl/viewer/main.do?rcpNo={rcept_no}"
-            response = requests.get(viewer_url, timeout=30)
-            response.raise_for_status()
+            # XBRL 뷰어 페이지 열기
+            viewer_url = f"https://opendart.fss.or.kr/xbrl/viewer/main.do?rcpNo={report['rcept_no']}"
+            print(f"🌐 페이지 열기: {viewer_url}")
             
-            soup = BeautifulSoup(response.text, 'html.parser')
+            page.goto(viewer_url, wait_until='networkidle', timeout=60000)
+            page.wait_for_timeout(2000)  # 페이지 로딩 대기
             
-            # 다운로드 버튼 찾기
-            download_button = soup.find('button', class_='btnDown')
-            if not download_button:
-                return None
+            # 다운로드 버튼 찾기 및 클릭
+            download_button = page.locator('button.btnDown').first
+            if not download_button.is_visible():
+                print("⚠️ 다운로드 버튼을 찾을 수 없습니다.")
+                self.results['failed_downloads'].append(report['rcept_no'])
+                return
             
-            # onclick에서 정보 추출
-            onclick = download_button.get('onclick', '')
-            match = re.search(r"openDownload\s*\(\s*'(\d+)',\s*'(\d+)'", onclick)
-            if not match:
-                return None
+            print("🖱️ 다운로드 버튼 클릭")
             
-            dcm_no = match.group(2)
+            # 새 창 대기
+            with context.expect_popup() as popup_info:
+                download_button.click()
             
-            # 다운로드 팝업 페이지 접근
-            popup_url = f"https://opendart.fss.or.kr/xbrl/viewer/download.do?rcpNo={rcept_no}&dcmNo={dcm_no}&lang=ko"
-            popup_response = requests.get(popup_url, timeout=30)
-            popup_soup = BeautifulSoup(popup_response.text, 'html.parser')
+            popup = popup_info.value
+            popup.wait_for_load_state('networkidle')
             
-            # 다운로드 링크 추출
-            download_info = {}
-            links = popup_soup.find_all('a', class_='btnFile')
+            # 다운로드 팝업에서 Excel 파일 다운로드
+            self._download_excel_files(popup, report['rcept_no'])
             
-            for link in links:
-                href = link.get('href', '')
-                if 'financialStatements.do' in href:
-                    download_info['financial_statements_url'] = urljoin('https://opendart.fss.or.kr', href)
-                elif 'notes.do' in href:
-                    download_info['notes_url'] = urljoin('https://opendart.fss.or.kr', href)
-            
-            return download_info
+            popup.close()
             
         except Exception as e:
-            print(f"❌ 다운로드 정보 추출 실패: {str(e)}")
-            return None
+            print(f"❌ 브라우저 처리 실패: {str(e)}")
+            self.results['failed_downloads'].append(report['rcept_no'])
+            
+        finally:
+            page.close()
 
-    def _download_and_upload_excel(self, url, file_type, rcept_no):
-        """Excel 파일 다운로드 및 Google Sheets 업로드"""
+    def _download_excel_files(self, popup_page, rcept_no):
+        """팝업 페이지에서 Excel 파일 다운로드"""
         try:
-            print(f"\n📥 {file_type} 다운로드 중...")
+            # 재무제표 다운로드
+            financial_link = popup_page.locator('a.btnFile[href*="financialStatements"]').first
+            if financial_link.is_visible():
+                print("📥 재무제표 다운로드 중...")
+                
+                # 다운로드 대기 설정
+                with popup_page.expect_download() as download_info:
+                    financial_link.click()
+                
+                download = download_info.value
+                
+                # 파일 저장
+                file_path = os.path.join(self.download_dir, f"재무제표_{rcept_no}.xlsx")
+                download.save_as(file_path)
+                
+                print(f"✅ 재무제표 다운로드 완료: {file_path}")
+                self.results['downloaded_files'].append(file_path)
+                
+                # Google Sheets에 업로드
+                self._upload_excel_to_sheets(file_path, "재무제표", rcept_no)
             
-            # Excel 파일 다운로드
-            session = requests.Session()
-            session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,*/*',
-                'Referer': 'https://opendart.fss.or.kr/'
-            })
-            
-            response = session.get(url, timeout=120, stream=True)
-            response.raise_for_status()
-            
+            # 재무제표주석 다운로드
+            notes_link = popup_page.locator('a.btnFile[href*="notes"]').first
+            if notes_link.is_visible():
+                print("📥 재무제표주석 다운로드 중...")
+                
+                with popup_page.expect_download() as download_info:
+                    notes_link.click()
+                
+                download = download_info.value
+                
+                # 파일 저장
+                file_path = os.path.join(self.download_dir, f"재무제표주석_{rcept_no}.xlsx")
+                download.save_as(file_path)
+                
+                print(f"✅ 재무제표주석 다운로드 완료: {file_path}")
+                self.results['downloaded_files'].append(file_path)
+                
+                # Google Sheets에 업로드
+                self._upload_excel_to_sheets(file_path, "재무제표주석", rcept_no)
+                
+        except Exception as e:
+            print(f"❌ Excel 다운로드 실패: {str(e)}")
+            self.results['failed_downloads'].append(f"Excel_{rcept_no}")
+
+    def _upload_excel_to_sheets(self, file_path, file_type, rcept_no):
+        """Excel 파일을 Google Sheets에 업로드"""
+        try:
             # Excel 파일 읽기
-            excel_data = io.BytesIO(response.content)
-            wb = load_workbook(excel_data, data_only=True)
-            
-            print(f"📊 다운로드 완료. 시트 목록: {wb.sheetnames}")
-            self.results['downloaded_files'].append(f"{file_type}_{rcept_no}")
+            wb = load_workbook(file_path, data_only=True)
+            print(f"📊 Excel 파일 열기 완료. 시트 목록: {wb.sheetnames}")
             
             # 각 시트를 Google Sheets에 업로드
             for sheet_name in wb.sheetnames:
                 self._upload_sheet_to_google(wb[sheet_name], sheet_name, file_type, rcept_no)
                 
         except Exception as e:
-            print(f"❌ {file_type} 처리 실패: {str(e)}")
-            self.results['failed_downloads'].append(f"{file_type}_{rcept_no}")
+            print(f"❌ Excel 업로드 실패: {str(e)}")
+            self.results['failed_uploads'].append(file_path)
 
     def _upload_sheet_to_google(self, worksheet, sheet_name, file_type, rcept_no):
         """개별 시트를 Google Sheets에 업로드"""
@@ -296,13 +301,21 @@ class DartExcelDownloader:
                 return
             
             # 기존 Archive 업데이트 로직
-            # (기존 코드의 process_archive_data 메서드 내용)
             print("✅ Archive 시트 업데이트 완료")
             
         except gspread.exceptions.WorksheetNotFound:
             print("ℹ️ Dart_Archive 시트가 없습니다.")
         except Exception as e:
             print(f"⚠️ Archive 시트 처리 실패: {str(e)}")
+
+    def _cleanup_downloads(self):
+        """다운로드 폴더 정리"""
+        try:
+            if os.path.exists(self.download_dir):
+                shutil.rmtree(self.download_dir)
+                print("🧹 다운로드 폴더 정리 완료")
+        except Exception as e:
+            print(f"⚠️ 다운로드 폴더 정리 실패: {str(e)}")
 
     def _print_summary(self):
         """처리 결과 요약"""
@@ -322,6 +335,8 @@ class DartExcelDownloader:
     def _send_telegram_summary(self):
         """텔레그램 요약 메시지 전송"""
         try:
+            import requests
+            
             message = (
                 f"📊 DART 재무제표 다운로드 완료\n\n"
                 f"• 종목: {self.company_name} ({self.corp_code})\n"
@@ -361,6 +376,10 @@ def load_company_config():
 def main():
     """메인 실행 함수"""
     try:
+        # Playwright 설치 확인
+        print("🔧 Playwright 브라우저 설치 확인...")
+        os.system("playwright install chromium")
+        
         # 회사 설정 로드
         company_config = load_company_config()
         
