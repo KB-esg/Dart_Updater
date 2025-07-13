@@ -1,4 +1,4 @@
-name: 02_현대오토에버_DART Update (XBRL v4)
+name: DART Update (XBRL v5)
 
 on:
   schedule:
@@ -26,18 +26,34 @@ on:
         required: false
         default: ''
         type: string
+      company_code:
+        description: '종목코드 (선택적, 기본값: 환경변수 사용)'
+        required: false
+        default: ''
+        type: string
 
 jobs:
   update-dart-reports:
     runs-on: ubuntu-latest
     timeout-minutes: 45          # XBRL 처리 시간 고려하여 증가
     
+    # 기본 종목 설정 (환경변수 또는 직접 설정)
+    # GitHub Secrets에서 관리하거나 여기에 직접 설정 가능
     env:
+      # DART API 및 인증 정보
       DART_API_KEY: ${{ secrets.DART_API_KEY }}
       GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-      AUTOEVER_SPREADSHEET_ID: ${{ secrets.AUTOEVER_SPREADSHEET_ID }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+      
+      # 종목별 설정 (여러 종목 관리 시 matrix 사용 권장)
+      # 현대오토에버 설정
+      COMPANY_CORP_CODE: ${{ github.event.inputs.company_code || '307950' }}
+      COMPANY_NAME: '현대오토에버'
+      COMPANY_SPREADSHEET_VAR: 'AUTOEVER_SPREADSHEET_ID'
+      AUTOEVER_SPREADSHEET_ID: ${{ secrets.AUTOEVER_SPREADSHEET_ID }}
+      
+      # 실행 옵션
       DEBUG_MODE: ${{ github.event.inputs.debug_mode || 'false' }}
       CUSTOM_DATE_RANGE: ${{ github.event.inputs.custom_date_range || 'false' }}
       MANUAL_START_DATE: ${{ github.event.inputs.start_date }}
@@ -64,12 +80,24 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          
+          # requirements.txt가 있으면 사용, 없으면 직접 설치
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install gspread google-auth google-auth-oauthlib google-auth-httplib2
+            pip install opendartreader beautifulsoup4 pandas requests
+            pip install openpyxl lxml
+            # HTML 파서 (선택적)
+            pip install html-table-parser || pip install html-table-parser-python3 || true
+          fi
           
       - name: Verify environment variables
         run: |
           echo "🔍 환경변수 확인 중..."
-          required_vars=("DART_API_KEY" "GOOGLE_CREDENTIALS" "AUTOEVER_SPREADSHEET_ID" "TELEGRAM_BOT_TOKEN" "TELEGRAM_CHANNEL_ID")
+          echo "🏢 처리할 종목: $COMPANY_NAME ($COMPANY_CORP_CODE)"
+          
+          required_vars=("DART_API_KEY" "GOOGLE_CREDENTIALS" "$COMPANY_SPREADSHEET_VAR" "TELEGRAM_BOT_TOKEN" "TELEGRAM_CHANNEL_ID")
           
           for var in "${required_vars[@]}"; do
             if [ -n "${!var}" ]; then
@@ -159,12 +187,13 @@ jobs:
         id: update-dart
         run: |
           echo "🚀 XBRL 기반 DART 업데이트 시작..."
+          echo "🏢 종목: $COMPANY_NAME ($COMPANY_CORP_CODE)"
           
           if [ "$DEBUG_MODE" = "true" ]; then
             echo "🔧 디버그 모드로 실행"
-            python -u 307950_dart_update.py 2>&1 | tee logs/dart_update.log
+            python -u Dart_update.py 2>&1 | tee logs/dart_update.log
           else
-            python 307950_dart_update.py 2>&1 | tee logs/dart_update.log
+            python Dart_update.py 2>&1 | tee logs/dart_update.log
           fi
           
           # 실행 결과 확인
@@ -243,7 +272,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
           echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
-          echo "| 🏢 회사 | 현대오토에버 (307950) |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🏢 회사 | $COMPANY_NAME ($COMPANY_CORP_CODE) |" >> $GITHUB_STEP_SUMMARY
           echo "| 📅 실행 시간 | $(date '+%Y-%m-%d %H:%M:%S UTC') |" >> $GITHUB_STEP_SUMMARY
           echo "| 🔄 실행 번호 | ${{ github.run_number }} |" >> $GITHUB_STEP_SUMMARY
           echo "| ✅ 성공 여부 | ${{ steps.update-dart.outputs.success || 'false' }} |" >> $GITHUB_STEP_SUMMARY
@@ -261,7 +290,7 @@ jobs:
           
           if [ "${{ steps.update-dart.outcome }}" = "success" ]; then
             echo "### ✅ 업데이트 성공" >> $GITHUB_STEP_SUMMARY
-            echo "XBRL/HTML 이원화 시스템으로 DART 데이터 업데이트가 성공적으로 완료되었습니다." >> $GITHUB_STEP_SUMMARY
+            echo "XBRL Excel 다운로드를 포함한 이원화 시스템으로 DART 데이터 업데이트가 성공적으로 완료되었습니다." >> $GITHUB_STEP_SUMMARY
             if [ "$CUSTOM_DATE_RANGE" = "true" ]; then
               echo "사용자가 지정한 날짜 범위($MANUAL_START_DATE ~ $MANUAL_END_DATE)의 모든 보고서를 처리했습니다." >> $GITHUB_STEP_SUMMARY
             fi
@@ -288,6 +317,11 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          COMPANY_NAME: '현대오토에버'
+          COMPANY_CORP_CODE: '307950'
+          CUSTOM_DATE_RANGE: ${{ github.event.inputs.custom_date_range || 'false' }}
+          MANUAL_START_DATE: ${{ github.event.inputs.start_date }}
+          MANUAL_END_DATE: ${{ github.event.inputs.end_date }}
         run: |
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHANNEL_ID" ]; then
             
@@ -309,14 +343,14 @@ jobs:
             MESSAGE=$(cat << EOF
           🤖 GitHub Actions 알림
           
-          📋 작업: DART 업데이트 (XBRL/HTML 이원화)
-          🏢 회사: 현대오토에버 (307950)
+          📋 작업: DART 업데이트 (XBRL Excel 다운로드)
+          🏢 회사: $COMPANY_NAME ($COMPANY_CORP_CODE)
           📅 실행 시간: $(date '+%Y-%m-%d %H:%M:%S UTC')
           ${DATE_INFO}
           ${STATUS_EMOJI} 결과: ${STATUS_TEXT}
           🔗 워크플로: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           
-          #DART #현대오토에버 #자동화 #이원화시스템
+          #DART #현대오토에버 #자동화 #XBRL다운로드
           EOF
           )
             
@@ -329,3 +363,20 @@ jobs:
           else
             echo "⚠️ 텔레그램 설정이 없어 알림을 건너뜁니다"
           fi
+
+# 여러 종목을 관리하는 경우 matrix 전략 사용 예시
+# jobs:
+#   update-dart-reports:
+#     strategy:
+#       matrix:
+#         company:
+#           - corp_code: '307950'
+#             name: '현대오토에버'
+#             spreadsheet_var: 'AUTOEVER_SPREADSHEET_ID'
+#           - corp_code: '005930'
+#             name: '삼성전자'
+#             spreadsheet_var: 'SAMSUNG_SPREADSHEET_ID'
+#     env:
+#       COMPANY_CORP_CODE: ${{ matrix.company.corp_code }}
+#       COMPANY_NAME: ${{ matrix.company.name }}
+#       COMPANY_SPREADSHEET_VAR: ${{ matrix.company.spreadsheet_var }}
