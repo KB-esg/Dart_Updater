@@ -1,4 +1,4 @@
-name: DART Update (XBRL v5)
+name: Autoever Update
 
 on:
   schedule:
