@@ -74,29 +74,6 @@ class DartExcelDownloader:
                 'D610005': {'start': 451, 'end': 500, 'name': '별도 자본변동표'}
             }
         }
-        
-        # 주석 Archive 시트 행 매핑 (7~500행 활용)
-        self.notes_row_mapping = {
-            '회계정책': {'start': 7, 'end': 30, 'name': '회계정책 및 추정'},
-            '현금및현금성자산': {'start': 31, 'end': 50, 'name': '현금및현금성자산'},
-            '매출채권': {'start': 51, 'end': 80, 'name': '매출채권 및 기타채권'},
-            '재고자산': {'start': 81, 'end': 100, 'name': '재고자산'},
-            '유형자산': {'start': 101, 'end': 140, 'name': '유형자산'},
-            '사용권자산': {'start': 141, 'end': 160, 'name': '사용권자산'},
-            '무형자산': {'start': 161, 'end': 190, 'name': '무형자산'},
-            '관계기업투자': {'start': 191, 'end': 220, 'name': '관계기업투자'},
-            '기타금융자산': {'start': 221, 'end': 250, 'name': '기타금융자산'},
-            '매입채무': {'start': 251, 'end': 280, 'name': '매입채무 및 기타채무'},
-            '기타유동부채': {'start': 281, 'end': 300, 'name': '기타유동부채'},
-            '충당부채': {'start': 301, 'end': 330, 'name': '충당부채'},
-            '확정급여부채': {'start': 331, 'end': 360, 'name': '확정급여부채'},
-            '이연법인세': {'start': 361, 'end': 380, 'name': '이연법인세'},
-            '자본금': {'start': 381, 'end': 410, 'name': '자본금 및 자본변동'},
-            '자본잉여금': {'start': 411, 'end': 430, 'name': '자본잉여금'},
-            '수익인식': {'start': 431, 'end': 460, 'name': '수익인식'},
-            '주당손익': {'start': 461, 'end': 480, 'name': '주당손익'},
-            '법인세비용': {'start': 481, 'end': 500, 'name': '법인세비용'}
-        }
 
     def _check_environment_variables(self):
         """환경변수 확인"""
@@ -507,7 +484,9 @@ class DartExcelDownloader:
             except gspread.exceptions.WorksheetNotFound:
                 print(f"🆕 새로운 {sheet_name} 시트 생성")
                 time.sleep(2)
-                archive_sheet = self.workbook.add_worksheet(sheet_name, 1000, 20)  # 1000행, 20열로 확장
+                # 주석 Archive는 더 많은 행이 필요함
+                max_rows = 2000 if 'notes' in file_type else 1000
+                archive_sheet = self.workbook.add_worksheet(sheet_name, max_rows, 20)
                 time.sleep(2)
             
             # 시트가 새로 생성된 경우 헤더 설정
@@ -544,142 +523,66 @@ class DartExcelDownloader:
                 time.sleep(60)
 
     def _setup_xbrl_archive_header(self, sheet, file_type):
-        """XBRL Archive 시트 헤더 설정 (M열부터 데이터 시작)"""
+        """XBRL Archive 시트 헤더 설정 (M열부터 데이터 시작, 수정됨)"""
         try:
             # 현재 날짜
             current_date = datetime.now().strftime('%Y-%m-%d')
             
-            # 1. 전체 헤더 데이터 구성 (A1:L6)
+            # 1. 기본 헤더만 설정 (A1:L6)
             header_data = []
             
             # 1행: 제목 정보
             if file_type == 'financial':
-                title_row = ['DART Archive XBRL 재무제표', '', '', '', '', '', '', '', '', f'최종업데이트: {current_date}', '', '', 'M열', 'N열', 'O열', 'P열']
+                title_row = ['DART Archive XBRL 재무제표', '', '', '', '', '', '', '', '', f'최종업데이트: {current_date}', '', '계정과목']
             else:
-                title_row = ['DART Archive XBRL 재무제표주석', '', '', '', '', '', '', '', '', f'최종업데이트: {current_date}', '', '', 'M열', 'N열', 'O열', 'P열']
+                title_row = ['DART Archive XBRL 재무제표주석', '', '', '', '', '', '', '', '', f'최종업데이트: {current_date}', '', '계정과목']
             header_data.append(title_row)
             
             # 2행: 회사 정보
-            company_row = [f'회사명: {self.company_name}', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
+            company_row = [f'회사명: {self.company_name}', '', '', '', '', '', '', '', '', '', '', '항목명↓']
             header_data.append(company_row)
             
             # 3행: 종목 정보
-            stock_row = [f'종목코드: {self.corp_code}', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
+            stock_row = [f'종목코드: {self.corp_code}', '', '', '', '', '', '', '', '', '', '', '']
             header_data.append(stock_row)
             
-            # 4행: 빈 행
-            header_data.append(['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''])
+            # 4-6행: 빈 행들
+            for _ in range(3):
+                header_data.append(['', '', '', '', '', '', '', '', '', '', '', ''])
             
-            # 5행: 컬럼 헤더 라벨 (분기정보가 들어갈 행)
-            column_labels = ['', '', '', '', '', '', '', '', '', '', '', '계정과목', '분기정보→', '분기정보→', '분기정보→', '분기정보→']
-            header_data.append(column_labels)
+            # 한 번에 업데이트 (L열까지만)
+            end_row = len(header_data)
+            range_name = f'A1:L{end_row}'
             
-            # 6행: 업데이트 날짜가 들어갈 행
-            date_labels = ['', '', '', '', '', '', '', '', '', '', '', '항목명↓', '업데이트날짜→', '업데이트날짜→', '업데이트날짜→', '업데이트날짜→']
-            header_data.append(date_labels)
+            print(f"  📋 XBRL Archive 기본 헤더 설정: {range_name}")
+            sheet.update(range_name, header_data)
             
-            # 7행부터: 시트별 고정 행 영역 설정
-            if file_type == 'financial':
-                items_data = self._create_financial_archive_structure()
-            else:
-                items_data = self._create_notes_archive_structure()
-            
-            # 전체 데이터 결합
-            all_data = header_data + items_data
-            
-            # 3. 한 번에 업데이트 (P열까지)
-            end_row = len(all_data)
-            range_name = f'A1:P{end_row}'
-            
-            print(f"  📋 XBRL Archive 헤더 설정: {range_name}")
-            sheet.update(range_name, all_data)
-            
-            # 4. 추가 설명
-            print(f"  ✅ XBRL Archive 레이아웃 완료")
+            print(f"  ✅ XBRL Archive 기본 레이아웃 완료")
             print(f"      📁 파일타입: {'재무제표' if file_type == 'financial' else '재무제표주석'}")
-            print(f"      📊 헤더영역: A1:P6 (기본정보)")
+            print(f"      📊 헤더영역: A1:L6 (기본정보)")
             print(f"      📋 계정명영역: L열 (계정과목명)")
             print(f"      📈 데이터영역: M열부터 시작 (분기별 데이터)")
-            print(f"      🔄 J1셀: 최종업데이트 일자")
             
         except Exception as e:
             print(f"  ❌ XBRL Archive 헤더 설정 실패: {str(e)}")
 
-    def _create_financial_archive_structure(self):
-        """재무제표 Archive 구조 생성 (시트별 고정 행 영역)"""
-        items_data = []
-        
-        # 연결 재무제표 영역
-        for sheet_code, info in self.financial_row_mapping['connected'].items():
-            start_row = info['start'] - 6  # 헤더 6행 제외
-            end_row = info['end'] - 6
-            sheet_name = info['name']
-            
-            for i in range(start_row, end_row + 1):
-                if i == start_row:
-                    # 첫 번째 행에 시트명 표시
-                    row_data = ['', '', '', '', '', '', '', '', '', '', '', f'[연결] {sheet_name}', '', '', '', '']
-                else:
-                    row_data = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
-                items_data.append(row_data)
-        
-        # 구분선 (251~256행)
-        for i in range(5):
-            items_data.append(['', '', '', '', '', '', '', '', '', '', '', '=== 구분선 ===', '', '', '', ''])
-        
-        # 별도 재무제표 영역
-        for sheet_code, info in self.financial_row_mapping['separate'].items():
-            start_row = info['start'] - 256  # 별도는 257행부터 시작
-            end_row = info['end'] - 256
-            sheet_name = info['name']
-            
-            for i in range(start_row, end_row + 1):
-                if i == start_row:
-                    # 첫 번째 행에 시트명 표시
-                    row_data = ['', '', '', '', '', '', '', '', '', '', '', f'[별도] {sheet_name}', '', '', '', '']
-                else:
-                    row_data = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
-                items_data.append(row_data)
-        
-        return items_data
-
-    def _create_notes_archive_structure(self):
-        """주석 Archive 구조 생성 (주석별 고정 행 영역, 7~500행 활용)"""
-        items_data = []
-        
-        for note_name, info in self.notes_row_mapping.items():
-            start_row = info['start'] - 6  # 헤더 6행 제외
-            end_row = info['end'] - 6
-            display_name = info.get('name', note_name)
-            
-            for i in range(start_row, end_row + 1):
-                if i == start_row:
-                    # 첫 번째 행에 주석명 표시
-                    row_data = ['', '', '', '', '', '', '', '', '', '', '', f'{display_name}', '', '', '', '']
-                else:
-                    row_data = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
-                items_data.append(row_data)
-        
-        print(f"  📊 주석 Archive 구조 생성: 총 {len(items_data)}행 (7~500행)")
-        return items_data
-
     def _find_last_data_column(self, sheet):
         """마지막 데이터 열 찾기 (M열부터 시작)"""
         try:
-            # 6행(첫 번째 데이터 행)에서 마지막 데이터가 있는 열 찾기
-            row_6_values = sheet.row_values(6)
+            # 2행에서 마지막 데이터가 있는 열 찾기 (헤더 행)
+            row_2_values = sheet.row_values(2)
             
             # M열(13번째 열)부터 시작해서 마지막 데이터 열 찾기
-            last_col = 11  # M열 = 13번째 열 (0-based index에서는 12) -> 수정: 11로 변경
+            last_col = 11  # M열 = 12번째 열 (0-based index에서는 11)
             
-            for i in range(11, len(row_6_values)):  # M열부터 검색 (12에서 11로 수정)
-                if row_6_values[i]:  # 데이터가 있으면
+            for i in range(11, len(row_2_values)):  # M열부터 검색
+                if row_2_values[i]:  # 데이터가 있으면
                     last_col = i
             
             # 다음 열에 새 데이터 추가
             next_col = last_col + 1
             
-            # 최소 M열(11)부터 시작 (12에서 11로 수정)
+            # 최소 M열(11)부터 시작
             if next_col < 11:
                 next_col = 11
             
@@ -690,7 +593,7 @@ class DartExcelDownloader:
             
         except Exception as e:
             print(f"⚠️ 마지막 열 찾기 실패: {str(e)}")
-            return 11  # 기본값: M열 (12에서 11로 수정)
+            return 11  # 기본값: M열
 
     def _update_xbrl_financial_archive_batch(self, sheet, wb, col_index):
         """XBRL 재무제표 Archive 업데이트 (대용량 배치 업데이트 최적화)"""
@@ -708,18 +611,18 @@ class DartExcelDownloader:
             # STEP 1: 모든 재무 데이터를 메모리에서 준비
             all_account_data, all_value_data = self._prepare_financial_data_for_batch_update(wb)
             
-            # STEP 2: 대용량 배치 업데이트 (최대 3번의 API 호출)
+            # STEP 2: 대용량 배치 업데이트
             print(f"  🚀 대용량 배치 업데이트 시작...")
             
-            # 배치 1: 헤더 정보 (한 번에)
-            header_range = f'{col_letter}5:{col_letter}6'
+            # 배치 1: 헤더 정보 (분기정보와 날짜만)
+            header_range = f'{col_letter}1:{col_letter}2'
             header_data = [[quarter_info], [report_date]]
             sheet.update(header_range, header_data)
             print(f"    ✅ 헤더 정보 업데이트 완료")
             
             # 배치 2: L열 계정명 대량 업데이트 (한 번에)
             if all_account_data:
-                account_range = f'L7:L500'
+                account_range = f'L7:L{6 + len(all_account_data)}'
                 sheet.update(account_range, all_account_data)
                 print(f"    ✅ L열 계정명 {len([row for row in all_account_data if row[0]])}개 업데이트 완료")
             
@@ -727,14 +630,11 @@ class DartExcelDownloader:
             
             # 배치 3: M열 값 대량 업데이트 (한 번에)
             if all_value_data:
-                value_range = f'{col_letter}7:{col_letter}500'
+                value_range = f'{col_letter}7:{col_letter}{6 + len(all_value_data)}'
                 sheet.update(value_range, all_value_data)
                 print(f"    ✅ {col_letter}열 값 {len([row for row in all_value_data if row[0]])}개 업데이트 완료")
             
-            # 최종 업데이트 시간 기록
-            sheet.update('J1', f'최종업데이트: {report_date}')
-            
-            print(f"  ✅ XBRL 재무제표 Archive 배치 업데이트 완료 (총 4번의 API 호출)")
+            print(f"  ✅ XBRL 재무제표 Archive 배치 업데이트 완료")
             
         except Exception as e:
             print(f"❌ XBRL 재무제표 Archive 업데이트 실패: {str(e)}")
@@ -746,17 +646,41 @@ class DartExcelDownloader:
         try:
             print(f"  🔄 배치 업데이트용 데이터 준비 중...")
             
-            # 494행 (7~500행) 배열 초기화
-            all_account_data = [[''] for _ in range(494)]  # L열용
-            all_value_data = [[''] for _ in range(494)]    # M열용
-            
             # 연결 재무제표 데이터 추출 및 배치
             connected_data = self._extract_all_connected_financial_data(wb)
-            self._place_data_in_batch_arrays(connected_data, all_account_data, all_value_data, 'connected')
             
             # 별도 재무제표 데이터 추출 및 배치
             separate_data = self._extract_all_separate_financial_data(wb)
-            self._place_data_in_batch_arrays(separate_data, all_account_data, all_value_data, 'separate')
+            
+            # 전체 데이터를 하나의 배열로 통합
+            all_account_data = []
+            all_value_data = []
+            
+            # 연결 데이터 추가
+            for sheet_code, sheet_info in connected_data.items():
+                # 시트명 헤더 추가
+                all_account_data.append([f"[연결] {sheet_info['name']}"])
+                all_value_data.append([''])
+                
+                # 계정 데이터 추가
+                for item in sheet_info['data']:
+                    all_account_data.append([item['account']])
+                    all_value_data.append([item['formatted_value']])
+            
+            # 구분선 추가
+            all_account_data.append(['=== 구분선 ==='])
+            all_value_data.append([''])
+            
+            # 별도 데이터 추가
+            for sheet_code, sheet_info in separate_data.items():
+                # 시트명 헤더 추가
+                all_account_data.append([f"[별도] {sheet_info['name']}"])
+                all_value_data.append([''])
+                
+                # 계정 데이터 추가
+                for item in sheet_info['data']:
+                    all_account_data.append([item['account']])
+                    all_value_data.append([item['formatted_value']])
             
             # 통계 출력
             account_count = len([row for row in all_account_data if row[0]])
@@ -780,9 +704,7 @@ class DartExcelDownloader:
                     sheet_data = self._extract_financial_sheet_data(wb[sheet_code], info['name'])
                     connected_data[sheet_code] = {
                         'name': info['name'],
-                        'data': sheet_data,
-                        'start_row': info['start'],
-                        'end_row': info['end']
+                        'data': sheet_data
                     }
                     print(f"    📄 [연결] {sheet_code}: {len(sheet_data)}개 계정")
             
@@ -802,9 +724,7 @@ class DartExcelDownloader:
                     sheet_data = self._extract_financial_sheet_data(wb[sheet_code], info['name'])
                     separate_data[sheet_code] = {
                         'name': info['name'],
-                        'data': sheet_data,
-                        'start_row': info['start'],
-                        'end_row': info['end']
+                        'data': sheet_data
                     }
                     print(f"    📄 [별도] {sheet_code}: {len(sheet_data)}개 계정")
             
@@ -814,7 +734,7 @@ class DartExcelDownloader:
         return separate_data
 
     def _extract_financial_sheet_data(self, worksheet, sheet_name):
-        """개별 재무제표 시트에서 데이터 추출 (최신 값 우선)"""
+        """개별 재무제표 시트에서 데이터 추출 (A열=계정명, B열=값)"""
         data = []
         
         try:
@@ -823,7 +743,7 @@ class DartExcelDownloader:
                 if not row or len(row) < 2:
                     continue
                     
-                # 계정명 (A열)
+                # A열: 계정명
                 account_name = row[0]
                 if not account_name or not isinstance(account_name, str):
                     continue
@@ -836,7 +756,7 @@ class DartExcelDownloader:
                     not account_name.endswith(('영역]', '항목', '코드')) and
                     '개요' not in account_name):
                     
-                    # 최신 값 추출 (B열 우선)
+                    # B열: 값 추출
                     value = None
                     if len(row) > 1 and isinstance(row[1], (int, float)) and abs(row[1]) >= 1000:
                         value = row[1]
@@ -852,44 +772,8 @@ class DartExcelDownloader:
         
         return data
 
-    def _place_data_in_batch_arrays(self, financial_data, account_array, value_array, data_type):
-        """추출된 재무 데이터를 배치 배열에 배치"""
-        try:
-            for sheet_code, sheet_info in financial_data.items():
-                start_row = sheet_info['start_row']
-                end_row = sheet_info['end_row']
-                data_list = sheet_info['data']
-                sheet_name = sheet_info['name']
-                
-                # 배열 인덱스 (7행부터 시작하므로 -7)
-                array_start = start_row - 7
-                array_end = end_row - 7
-                
-                if array_start < 0 or array_end >= len(account_array):
-                    continue
-                
-                # 시트명 표시 (첫 번째 행)
-                type_prefix = '[연결]' if data_type == 'connected' else '[별도]'
-                account_array[array_start][0] = f"{type_prefix} {sheet_name}"
-                value_array[array_start][0] = ''
-                
-                # 실제 계정 데이터 배치
-                current_index = array_start + 1
-                for item in data_list:
-                    if current_index <= array_end and current_index < len(account_array):
-                        account_array[current_index][0] = item['account']
-                        value_array[current_index][0] = item['formatted_value']
-                        current_index += 1
-                    else:
-                        break
-                
-                print(f"      ✅ {sheet_code} → {start_row}~{end_row}행 배치 완료")
-        
-        except Exception as e:
-            print(f"    ⚠️ 배열 배치 실패: {str(e)}")
-
     def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index, notes_type='connected'):
-        """XBRL 재무제표주석 Archive 업데이트 (실제 주석 시트 내용 배치 업데이트, 개선된 중분류 처리)"""
+        """XBRL 재무제표주석 Archive 업데이트 (실제 주석 시트 내용 배치 업데이트, 수정됨)"""
         try:
             print(f"  📝 XBRL 주석 데이터 분석 중... ({notes_type})")
             
@@ -901,36 +785,33 @@ class DartExcelDownloader:
             report_date = datetime.now().strftime('%Y-%m-%d')
             quarter_info = self._get_quarter_info()
             
-            # STEP 1: 모든 주석 데이터를 메모리에서 준비 (개선된 중분류 처리)
+            # STEP 1: 모든 주석 데이터를 메모리에서 준비 (수정된 버전)
             all_notes_account_data, all_notes_value_data = self._prepare_notes_data_for_batch_update(wb, notes_type)
             
-            # STEP 2: 대용량 배치 업데이트 (최대 3번의 API 호출)
-            print(f"  🚀 주석 대용량 배치 업데이트 시작...")
+            # STEP 2: 배치 업데이트
+            print(f"  🚀 주석 배치 업데이트 시작...")
             
-            # 배치 1: 헤더 정보 (한 번에)
-            header_range = f'{col_letter}5:{col_letter}6'
+            # 배치 1: 헤더 정보 (분기정보와 날짜만)
+            header_range = f'{col_letter}1:{col_letter}2'
             header_data = [[quarter_info], [report_date]]
             sheet.update(header_range, header_data)
             print(f"    ✅ 헤더 정보 업데이트 완료")
             
-            # 배치 2: L열 주석 항목명 대량 업데이트 (한 번에)
+            # 배치 2: L열 주석 항목명 대량 업데이트
             if all_notes_account_data:
-                account_range = f'L7:L500'
+                account_range = f'L7:L{6 + len(all_notes_account_data)}'
                 sheet.update(account_range, all_notes_account_data)
                 print(f"    ✅ L열 주석 항목 {len([row for row in all_notes_account_data if row[0]])}개 업데이트 완료")
             
             time.sleep(2)  # API 제한 회피
             
-            # 배치 3: M열 주석 값 대량 업데이트 (한 번에)
+            # 배치 3: M열 주석 값 대량 업데이트
             if all_notes_value_data:
-                value_range = f'{col_letter}7:{col_letter}500'
+                value_range = f'{col_letter}7:{col_letter}{6 + len(all_notes_value_data)}'
                 sheet.update(value_range, all_notes_value_data)
                 print(f"    ✅ {col_letter}열 주석 값 {len([row for row in all_notes_value_data if row[0]])}개 업데이트 완료")
             
-            # 최종 업데이트 시간 기록
-            sheet.update('J1', f'최종업데이트: {report_date}')
-            
-            print(f"  ✅ XBRL 주석 Archive 배치 업데이트 완료 (총 4번의 API 호출)")
+            print(f"  ✅ XBRL 주석 Archive 배치 업데이트 완료")
             
         except Exception as e:
             print(f"❌ XBRL 주석 Archive 업데이트 실패: {str(e)}")
@@ -938,13 +819,9 @@ class DartExcelDownloader:
             print(f"📋 상세 오류: {traceback.format_exc()}")
 
     def _prepare_notes_data_for_batch_update(self, wb, notes_type):
-        """주석 데이터를 배치 업데이트용으로 준비 (메모리에서 처리, 개선된 중분류 처리)"""
+        """주석 데이터를 배치 업데이트용으로 준비 (수정된 버전)"""
         try:
             print(f"  🔄 주석 배치 업데이트용 데이터 준비 중...")
-            
-            # 494행 (7~500행) 배열 초기화
-            all_notes_account_data = [[''] for _ in range(494)]  # L열용
-            all_notes_value_data = [[''] for _ in range(494)]    # M열용
             
             # D8xxxxx 주석 시트들 필터링 (연결/별도 구분)
             if notes_type == 'connected':
@@ -954,22 +831,36 @@ class DartExcelDownloader:
             
             print(f"    📄 {notes_type} 주석 시트 {len(target_sheets)}개 발견")
             
+            # 전체 데이터를 하나의 배열로 통합
+            all_notes_account_data = []
+            all_notes_value_data = []
+            
             # 각 주석 시트의 데이터 추출 및 배치
-            current_row_index = 0
             for sheet_name in target_sheets:
-                if current_row_index >= 494:  # 배열 범위 초과 방지
-                    break
-                    
                 sheet_data = self._extract_notes_sheet_data(wb[sheet_name], sheet_name)
                 if sheet_data:
-                    used_rows = self._place_notes_data_in_arrays(
-                        sheet_data, 
-                        all_notes_account_data, 
-                        all_notes_value_data, 
-                        current_row_index
-                    )
-                    current_row_index += used_rows
-                    print(f"      ✅ {sheet_name}: {len(sheet_data['items'])}개 항목 → {used_rows}행 사용")
+                    # 시트 제목 추가
+                    all_notes_account_data.append([sheet_data['title']])
+                    all_notes_value_data.append([''])
+                    
+                    # 각 항목들 배치 (중분류/세분류 구분하여)
+                    for item in sheet_data['items']:
+                        # 중분류인 경우 구분 표시
+                        if item.get('is_category', False):
+                            display_name = f"● {item['original_name']}"
+                        else:
+                            # 세분류인 경우 들여쓰기
+                            original_name = item.get('original_name', item['name'])
+                            display_name = f"  └ {original_name}"
+                        
+                        all_notes_account_data.append([display_name])
+                        all_notes_value_data.append([item['formatted_value']])
+                    
+                    # 구분을 위한 빈 행 추가
+                    all_notes_account_data.append([''])
+                    all_notes_value_data.append([''])
+                    
+                    print(f"      ✅ {sheet_name}: {len(sheet_data['items'])}개 항목 추가")
             
             # 통계 출력
             account_count = len([row for row in all_notes_account_data if row[0]])
@@ -983,7 +874,7 @@ class DartExcelDownloader:
             return None, None
 
     def _extract_notes_sheet_data(self, worksheet, sheet_name):
-        """개별 주석 시트에서 A열 항목과 B열 값 추출 (중분류 구조 고려)"""
+        """개별 주석 시트에서 A열 항목과 B열 값 추출 (중분류 구조 고려, 수정됨)"""
         try:
             sheet_data = {
                 'title': '',
@@ -1001,7 +892,6 @@ class DartExcelDownloader:
             
             # 중분류 컨텍스트 추적을 위한 변수
             current_category = ""
-            category_counter = {}  # 중분류별 카운터
             
             # A열 항목들과 B열 값들 추출 (3행부터)
             for row_idx, row in enumerate(worksheet.iter_rows(min_row=3, max_row=100, values_only=True), start=3):
@@ -1022,15 +912,12 @@ class DartExcelDownloader:
                     item_name in ['', '-', '해당없음']):
                     continue
                 
-                # 중분류 감지 (보통 들여쓰기가 없고 굵은 글씨 또는 특정 패턴)
+                # 중분류 감지
                 is_category = self._is_category_header(item_name, row_idx, worksheet)
                 
                 if is_category:
                     # 새로운 중분류 발견
                     current_category = item_name
-                    if current_category not in category_counter:
-                        category_counter[current_category] = 0
-                    category_counter[current_category] += 1
                     
                     # 중분류 제목도 Archive에 포함
                     sheet_data['items'].append({
@@ -1044,15 +931,23 @@ class DartExcelDownloader:
                     continue
                 
                 # 세분류 처리
-                # B열 값 추출
+                # B열 값 추출 (수정됨: B열 값을 정확히 추출)
                 value = None
-                if len(row) > 1 and row[1]:
+                if len(row) > 1 and row[1] is not None:
                     if isinstance(row[1], (int, float)):
                         value = row[1]
                     elif isinstance(row[1], str):
                         value_str = str(row[1]).strip()
                         if value_str and value_str != '-':
-                            value = value_str
+                            # 숫자 변환 시도
+                            try:
+                                # 쉼표 제거 후 숫자 변환 시도
+                                clean_num = value_str.replace(',', '').replace('(', '-').replace(')', '').strip()
+                                if clean_num and clean_num != '-':
+                                    value = float(clean_num)
+                            except:
+                                # 숫자가 아니면 문자열 그대로
+                                value = value_str
                 
                 # 고유한 항목명 생성 (중분류 정보 포함)
                 if current_category:
@@ -1074,7 +969,7 @@ class DartExcelDownloader:
                     'name': unique_name,
                     'original_name': item_name,  # 원본 이름 보존
                     'value': value,
-                    'formatted_value': self._format_notes_value(value) if value else '',
+                    'formatted_value': self._format_notes_value(value) if value is not None else '',
                     'category': current_category,
                     'is_category': False,
                     'row_number': row_idx
@@ -1117,7 +1012,6 @@ class DartExcelDownloader:
                     return True
             
             # 방법 2: 셀 스타일 확인 (가능한 경우)
-            # Excel에서 굵은 글씨나 특별한 스타일이 있는지 확인
             try:
                 cell = worksheet.cell(row=row_idx, column=1)
                 if hasattr(cell, 'font') and cell.font and cell.font.bold:
@@ -1126,7 +1020,6 @@ class DartExcelDownloader:
                 pass
             
             # 방법 3: 들여쓰기 확인
-            # 들여쓰기가 없거나 적은 경우 중분류로 판단
             if not item_name.startswith((' ', '\t')):
                 # 다음 행들이 들여쓰기되어 있는지 확인
                 next_rows_indented = 0
@@ -1147,50 +1040,6 @@ class DartExcelDownloader:
         except Exception as e:
             print(f"        ⚠️ 중분류 판단 실패: {str(e)}")
             return False
-
-    def _place_notes_data_in_arrays(self, sheet_data, account_array, value_array, start_index):
-        """주석 시트 데이터를 배치 배열에 배치 (개선된 버전)"""
-        try:
-            if start_index >= len(account_array):
-                return 0
-            
-            current_index = start_index
-            
-            # 주석 시트 제목 배치
-            if current_index < len(account_array):
-                account_array[current_index][0] = sheet_data['title']
-                value_array[current_index][0] = ''
-                current_index += 1
-            
-            # 각 항목들 배치 (중분류/세분류 구분하여)
-            for item in sheet_data['items']:
-                if current_index >= len(account_array):
-                    break
-                
-                # 중분류인 경우 구분 표시
-                if item.get('is_category', False):
-                    display_name = f"● {item['original_name']}"
-                else:
-                    # 세분류인 경우 들여쓰기
-                    original_name = item.get('original_name', item['name'])
-                    display_name = f"  └ {original_name}"
-                
-                account_array[current_index][0] = display_name
-                value_array[current_index][0] = item['formatted_value']
-                current_index += 1
-            
-            # 구분을 위한 빈 행 추가
-            if current_index < len(account_array):
-                account_array[current_index][0] = ''
-                value_array[current_index][0] = ''
-                current_index += 1
-            
-            used_rows = current_index - start_index
-            return used_rows
-            
-        except Exception as e:
-            print(f"    ⚠️ 주석 배열 배치 실패: {str(e)}")
-            return 0
 
     def _format_notes_value(self, value):
         """주석 값 포맷팅"""
@@ -1257,51 +1106,36 @@ class DartExcelDownloader:
             return None
 
     def _get_quarter_info(self):
-        """보고서 기준 분기 정보 반환 (pandas Series 오류 해결)"""
+        """보고서 기준 분기 정보 반환"""
         try:
-            # self.current_report가 pandas Series인지 확인하고 안전하게 처리
             if self.current_report is not None and hasattr(self.current_report, 'get'):
-                # pandas Series인 경우 안전하게 값 추출
                 if hasattr(self.current_report, 'iloc'):
-                    # pandas Series인 경우
                     report_name = self.current_report.get('report_nm', '')
-                    rcept_no = self.current_report.get('rcept_no', '')
                 else:
-                    # 일반 dict인 경우
                     report_name = self.current_report.get('report_nm', '')
-                    rcept_no = self.current_report.get('rcept_no', '')
                 
                 if report_name:
                     print(f"  📅 보고서 분석: {report_name}")
                     
-                    # 정규식으로 날짜 추출 개선
                     import re
                     
-                    # 패턴 1: (YYYY.MM) 형태
-                    date_pattern1 = re.search(r'\((\d{4})\.(\d{2})\)', str(report_name))
-                    # 패턴 2: YYYY년 MM월 형태  
-                    date_pattern2 = re.search(r'(\d{4})년\s*(\d{1,2})월', str(report_name))
-                    # 패턴 3: 분기보고서 패턴
+                    # 패턴 매칭으로 분기 정보 추출
                     if '1분기' in str(report_name):
                         current_year = datetime.now().year
                         quarter_text = f"1Q{str(current_year)[2:]}"
-                        print(f"    📊 1분기 보고서 감지: {quarter_text}")
                         return quarter_text
                     elif '반기' in str(report_name) or '2분기' in str(report_name):
                         current_year = datetime.now().year
                         quarter_text = f"2Q{str(current_year)[2:]}"
-                        print(f"    📊 2분기/반기 보고서 감지: {quarter_text}")
                         return quarter_text
                     elif '3분기' in str(report_name):
                         current_year = datetime.now().year
                         quarter_text = f"3Q{str(current_year)[2:]}"
-                        print(f"    📊 3분기 보고서 감지: {quarter_text}")
                         return quarter_text
-                    elif '연결재무제표' in str(report_name) and '3월' in str(report_name):
-                        current_year = datetime.now().year
-                        quarter_text = f"1Q{str(current_year)[2:]}"
-                        print(f"    📊 3월 연결재무제표 감지: {quarter_text}")
-                        return quarter_text
+                    
+                    # 날짜 패턴 매칭
+                    date_pattern1 = re.search(r'\((\d{4})\.(\d{2})\)', str(report_name))
+                    date_pattern2 = re.search(r'(\d{4})년\s*(\d{1,2})월', str(report_name))
                     
                     year, month = None, None
                     
@@ -1313,7 +1147,6 @@ class DartExcelDownloader:
                         month = int(month)
                     
                     if year and month:
-                        # 분기 계산
                         if month <= 3:
                             quarter = 1
                         elif month <= 6:
@@ -1324,7 +1157,6 @@ class DartExcelDownloader:
                             quarter = 4
                         
                         quarter_text = f"{quarter}Q{year[2:]}"
-                        print(f"    📊 추출된 분기: {quarter_text} (년도: {year}, 월: {month})")
                         return quarter_text
         
         except Exception as e:
@@ -1335,7 +1167,6 @@ class DartExcelDownloader:
         quarter = (now.month - 1) // 3 + 1
         year = str(now.year)[2:]
         default_quarter = f"{quarter}Q{year}"
-        print(f"    📊 기본 분기 사용: {default_quarter}")
         return default_quarter
 
     def _get_column_letter(self, col_index):
