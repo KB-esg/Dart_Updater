@@ -70,7 +70,7 @@ jobs:
             pip install -r requirements.txt
           else
             pip install gspread google-auth google-auth-oauthlib google-auth-httplib2
-            pip install opendartreader pandas openpyxl playwright requests
+            pip install opendartreader pandas openpyxl playwright requests tqdm
           fi
           
           # Playwright 브라우저 설치
