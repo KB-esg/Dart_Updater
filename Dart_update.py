@@ -10,7 +10,6 @@ from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright
 import shutil
 from tqdm import tqdm
-from collections import Counter
 
 class DartExcelDownloader:
     """DART 재무제표 Excel 다운로드 및 Google Sheets 업로드 (Playwright 사용)"""
@@ -452,12 +451,19 @@ class DartExcelDownloader:
             # 저장된 Excel 파일 경로 확인
             if 'financial' in self.results['excel_files']:
                 print("📈 XBRL 재무제표 Archive 업데이트 중...")
+                
+                # 디버깅: Excel 파일 구조 분석
+                self._debug_excel_structure(self.results['excel_files']['financial'], 'financial')
+                
                 self._update_single_xbrl_archive('Dart_Archive_XBRL_재무제표', 
                                                self.results['excel_files']['financial'], 
                                                'financial')
                 
             if 'notes' in self.results['excel_files']:
                 print("📝 XBRL 재무제표주석 Archive 업데이트 중...")
+                
+                # 디버깅: Excel 파일 구조 분석
+                self._debug_excel_structure(self.results['excel_files']['notes'], 'notes')
                 
                 # 주석은 연결/별도로 분리
                 self._update_single_xbrl_archive('Dart_Archive_XBRL_주석_연결', 
@@ -472,6 +478,65 @@ class DartExcelDownloader:
             
         except Exception as e:
             print(f"❌ XBRL Archive 업데이트 실패: {str(e)}")
+
+    def _debug_excel_structure(self, file_path, file_type):
+        """Excel 파일 구조 디버깅"""
+        try:
+            print(f"\n  🔍 Excel 파일 구조 분석: {file_type}")
+            wb = load_workbook(file_path, data_only=True)
+            
+            print(f"  📋 시트 목록: {wb.sheetnames}")
+            print(f"  📊 총 시트 수: {len(wb.sheetnames)}")
+            
+            # 각 시트의 구조 분석
+            for sheet_name in wb.sheetnames[:5]:  # 처음 5개 시트만
+                if sheet_name.startswith('D'):
+                    worksheet = wb[sheet_name]
+                    print(f"\n  📄 시트 분석: {sheet_name}")
+                    print(f"     크기: {worksheet.max_row}행 x {worksheet.max_column}열")
+                    
+                    # 처음 10행의 데이터 출력
+                    print(f"     데이터 샘플 (처음 10행):")
+                    for row_idx in range(1, min(11, worksheet.max_row + 1)):
+                        row_data = []
+                        for col_idx in range(1, min(6, worksheet.max_column + 1)):
+                            cell = worksheet.cell(row=row_idx, column=col_idx)
+                            if cell.value is not None:
+                                value_str = str(cell.value)[:30]
+                                if len(str(cell.value)) > 30:
+                                    value_str += "..."
+                                row_data.append(f"{self._get_column_letter(col_idx-1)}:{value_str}")
+                        
+                        if row_data:
+                            print(f"       행{row_idx}: {' | '.join(row_data)}")
+                    
+                    # 데이터가 있는 열 분석
+                    print(f"     열 분석:")
+                    data_cols = []
+                    for col_idx in range(1, min(11, worksheet.max_column + 1)):
+                        has_data = False
+                        numeric_count = 0
+                        text_count = 0
+                        
+                        for row_idx in range(1, min(51, worksheet.max_row + 1)):
+                            cell = worksheet.cell(row=row_idx, column=col_idx)
+                            if cell.value is not None:
+                                has_data = True
+                                if isinstance(cell.value, (int, float)):
+                                    numeric_count += 1
+                                elif isinstance(cell.value, str) and cell.value.strip():
+                                    text_count += 1
+                        
+                        if has_data:
+                            col_letter = self._get_column_letter(col_idx-1)
+                            data_cols.append(f"{col_letter}열(숫자:{numeric_count}, 텍스트:{text_count})")
+                    
+                    print(f"       데이터 있는 열: {', '.join(data_cols)}")
+            
+            wb.close()
+            
+        except Exception as e:
+            print(f"  ❌ Excel 구조 분석 실패: {str(e)}")
 
     def _update_single_xbrl_archive(self, sheet_name, file_path, file_type):
         """개별 XBRL Archive 시트 업데이트 (연결/별도 구분)"""
@@ -643,138 +708,531 @@ class DartExcelDownloader:
             print(f"📋 상세 오류: {traceback.format_exc()}")
 
     def _prepare_financial_data_for_batch_update(self, wb):
-        """재무 데이터를 배치 업데이트용으로 준비 (메모리에서 처리)"""
+        """재무 데이터를 배치 업데이트용으로 준비 (모든 데이터 포함)"""
         try:
             print(f"  🔄 배치 업데이트용 데이터 준비 중...")
             
-            # 연결 재무제표 데이터 추출 및 배치
-            connected_data = self._extract_all_connected_financial_data(wb)
-            
-            # 별도 재무제표 데이터 추출 및 배치
-            separate_data = self._extract_all_separate_financial_data(wb)
-            
-            # 전체 데이터를 하나의 배열로 통합
             all_account_data = []
             all_value_data = []
             
-            # 연결 데이터 추가
-            for sheet_code, sheet_info in connected_data.items():
+            # 모든 D로 시작하는 시트 처리
+            d_sheets = [name for name in wb.sheetnames if name.startswith('D')]
+            print(f"  📋 D로 시작하는 시트 {len(d_sheets)}개 발견")
+            
+            for sheet_name in sorted(d_sheets):
+                worksheet = wb[sheet_name]
+                
+                # 시트 제목 찾기
+                sheet_title = self._find_sheet_title(worksheet) or sheet_name
+                
+                # 연결/별도 구분
+                sheet_type = ""
+                if '연결' in sheet_title or sheet_name.endswith('0'):
+                    sheet_type = "[연결]"
+                elif '별도' in sheet_title or sheet_name.endswith('5'):
+                    sheet_type = "[별도]"
+                else:
+                    sheet_type = "[기타]"
+                
+                # 재무제표 종류 판단
+                fs_type = ""
+                if '재무상태표' in sheet_title:
+                    fs_type = "재무상태표"
+                elif '손익계산서' in sheet_title or '포괄손익' in sheet_title:
+                    fs_type = "손익계산서"
+                elif '현금흐름표' in sheet_title:
+                    fs_type = "현금흐름표"
+                elif '자본변동표' in sheet_title:
+                    fs_type = "자본변동표"
+                else:
+                    # 시트 내용에서 판단
+                    for row in worksheet.iter_rows(min_row=1, max_row=10, values_only=True):
+                        if row and row[0]:
+                            cell_text = str(row[0])
+                            if '자산' in cell_text or '부채' in cell_text:
+                                fs_type = "재무상태표"
+                                break
+                            elif '매출' in cell_text or '영업이익' in cell_text:
+                                fs_type = "손익계산서"
+                                break
+                            elif '현금' in cell_text and '흐름' in cell_text:
+                                fs_type = "현금흐름표"
+                                break
+                            elif '자본' in cell_text and '변동' in cell_text:
+                                fs_type = "자본변동표"
+                                break
+                
+                if not fs_type:
+                    continue  # 재무제표가 아닌 시트는 건너뛰기
+                
                 # 시트명 헤더 추가
-                all_account_data.append([f"[연결] {sheet_info['name']}"])
+                header_text = f"{sheet_type} {fs_type} ({sheet_name})"
+                all_account_data.append([header_text])
                 all_value_data.append([''])
                 
-                # 계정 데이터 추가
-                for item in sheet_info['data']:
-                    all_account_data.append([item['account']])
-                    all_value_data.append([item['formatted_value']])
-            
-            # 구분선 추가
-            all_account_data.append(['=== 구분선 ==='])
-            all_value_data.append([''])
-            
-            # 별도 데이터 추가
-            for sheet_code, sheet_info in separate_data.items():
-                # 시트명 헤더 추가
-                all_account_data.append([f"[별도] {sheet_info['name']}"])
-                all_value_data.append([''])
+                # 모든 데이터 추출 (필터링 최소화)
+                data_count = 0
+                for row_idx in range(1, min(worksheet.max_row + 1, 500)):
+                    row = list(worksheet.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True))[0]
+                    
+                    if not row or len(row) < 2:
+                        continue
+                    
+                    # A열: 계정명 (어떤 텍스트든 허용)
+                    account_name = str(row[0]).strip() if row[0] else ''
+                    
+                    # 최소한의 필터링만 적용
+                    if (not account_name or 
+                        len(account_name) < 2 or 
+                        account_name.startswith('[') or
+                        account_name.startswith('(단위')):
+                        continue
+                    
+                    # B열: 값
+                    value = None
+                    if row[1] is not None:
+                        if isinstance(row[1], (int, float)):
+                            value = row[1]
+                        elif isinstance(row[1], str):
+                            try:
+                                clean_str = str(row[1]).replace(',', '').replace('(', '-').replace(')', '').strip()
+                                if clean_str and clean_str != '-':
+                                    value = float(clean_str)
+                            except:
+                                pass
+                    
+                    # 모든 계정명 추가 (값이 없어도)
+                    all_account_data.append([account_name])
+                    all_value_data.append([self._format_number_for_archive(value) if value else ''])
+                    data_count += 1
                 
-                # 계정 데이터 추가
-                for item in sheet_info['data']:
-                    all_account_data.append([item['account']])
-                    all_value_data.append([item['formatted_value']])
+                if data_count > 0:
+                    print(f"    ✅ {sheet_name}: {data_count}개 항목 추가")
+                    # 구분을 위한 빈 행
+                    all_account_data.append([''])
+                    all_value_data.append([''])
             
             # 통계 출력
-            account_count = len([row for row in all_account_data if row[0]])
-            value_count = len([row for row in all_value_data if row[0]])
-            print(f"    📋 준비 완료: 계정명 {account_count}개, 값 {value_count}개")
+            total_items = len([row for row in all_account_data if row[0] and not row[0].startswith('[')])
+            print(f"  📊 총 추출 항목: {total_items}개")
             
             return all_account_data, all_value_data
             
         except Exception as e:
             print(f"  ❌ 배치 데이터 준비 실패: {str(e)}")
-            return None, None
+            import traceback
+            traceback.print_exc()
+            return [], []
+
+    def _find_sheet_title(self, worksheet):
+        """시트 제목 찾기"""
+        try:
+            # 처음 10행에서 제목 찾기
+            for row in worksheet.iter_rows(min_row=1, max_row=10, values_only=True):
+                for cell in row:
+                    if cell and isinstance(cell, str):
+                        if any(keyword in str(cell) for keyword in ['재무상태표', '손익계산서', '현금흐름표', '자본변동표', '포괄손익']):
+                            return str(cell).strip()
+            return None
+        except:
+            return None
 
     def _extract_all_connected_financial_data(self, wb):
-        """연결 재무제표 모든 데이터 추출"""
+        """연결 재무제표 모든 데이터 추출 (개선된 버전)"""
         connected_data = {}
         
         try:
-            # 연결 시트들 처리
-            for sheet_code, info in self.financial_row_mapping['connected'].items():
-                if sheet_code in wb.sheetnames:
-                    sheet_data = self._extract_financial_sheet_data(wb[sheet_code], info['name'])
-                    connected_data[sheet_code] = {
-                        'name': info['name'],
-                        'data': sheet_data
-                    }
-                    print(f"    📄 [연결] {sheet_code}: {len(sheet_data)}개 계정")
+            print(f"\n    🔍 연결 재무제표 시트 스캔 중...")
+            
+            # 실제 시트명으로 직접 찾기 (시트 코드에 의존하지 않음)
+            financial_sheet_patterns = [
+                ('재무상태표', '연결 재무상태표'),
+                ('손익계산서', '연결 손익계산서'),
+                ('포괄손익계산서', '연결 포괄손익계산서'),
+                ('현금흐름표', '연결 현금흐름표'),
+                ('자본변동표', '연결 자본변동표')
+            ]
+            
+            # 모든 시트 검사
+            for sheet_name in wb.sheetnames:
+                # D로 시작하는 시트만 처리
+                if not sheet_name.startswith('D'):
+                    continue
+                    
+                # 시트 내용 확인하여 재무제표 종류 파악
+                worksheet = wb[sheet_name]
+                sheet_title = self._get_sheet_title(worksheet)
+                
+                # 연결 재무제표인지 확인
+                if '연결' in sheet_title or sheet_name.endswith('0'):
+                    # 어떤 재무제표인지 파악
+                    for pattern, display_name in financial_sheet_patterns:
+                        if pattern in sheet_title or pattern in sheet_name:
+                            print(f"      📄 발견: {sheet_name} → {display_name}")
+                            
+                            # 데이터 추출
+                            sheet_data = self._extract_financial_sheet_data_v2(worksheet, display_name)
+                            if sheet_data:
+                                connected_data[sheet_name] = {
+                                    'name': display_name,
+                                    'data': sheet_data
+                                }
+                                print(f"        ✅ {len(sheet_data)}개 계정 추출 완료")
+                            break
             
         except Exception as e:
             print(f"    ⚠️ 연결 데이터 추출 실패: {str(e)}")
+            import traceback
+            traceback.print_exc()
         
         return connected_data
 
     def _extract_all_separate_financial_data(self, wb):
-        """별도 재무제표 모든 데이터 추출"""
+        """별도 재무제표 모든 데이터 추출 (개선된 버전)"""
         separate_data = {}
         
         try:
-            # 별도 시트들 처리
-            for sheet_code, info in self.financial_row_mapping['separate'].items():
-                if sheet_code in wb.sheetnames:
-                    sheet_data = self._extract_financial_sheet_data(wb[sheet_code], info['name'])
-                    separate_data[sheet_code] = {
-                        'name': info['name'],
-                        'data': sheet_data
-                    }
-                    print(f"    📄 [별도] {sheet_code}: {len(sheet_data)}개 계정")
+            print(f"\n    🔍 별도 재무제표 시트 스캔 중...")
+            
+            # 실제 시트명으로 직접 찾기
+            financial_sheet_patterns = [
+                ('재무상태표', '별도 재무상태표'),
+                ('손익계산서', '별도 손익계산서'),
+                ('포괄손익계산서', '별도 포괄손익계산서'),
+                ('현금흐름표', '별도 현금흐름표'),
+                ('자본변동표', '별도 자본변동표')
+            ]
+            
+            # 모든 시트 검사
+            for sheet_name in wb.sheetnames:
+                # D로 시작하는 시트만 처리
+                if not sheet_name.startswith('D'):
+                    continue
+                    
+                # 시트 내용 확인하여 재무제표 종류 파악
+                worksheet = wb[sheet_name]
+                sheet_title = self._get_sheet_title(worksheet)
+                
+                # 별도 재무제표인지 확인 (연결이 아니고 5로 끝나는 경우)
+                if ('별도' in sheet_title or sheet_name.endswith('5')) and '연결' not in sheet_title:
+                    # 어떤 재무제표인지 파악
+                    for pattern, display_name in financial_sheet_patterns:
+                        if pattern in sheet_title or pattern in sheet_name:
+                            print(f"      📄 발견: {sheet_name} → {display_name}")
+                            
+                            # 데이터 추출
+                            sheet_data = self._extract_financial_sheet_data_v2(worksheet, display_name)
+                            if sheet_data:
+                                separate_data[sheet_name] = {
+                                    'name': display_name,
+                                    'data': sheet_data
+                                }
+                                print(f"        ✅ {len(sheet_data)}개 계정 추출 완료")
+                            break
             
         except Exception as e:
             print(f"    ⚠️ 별도 데이터 추출 실패: {str(e)}")
+            import traceback
+            traceback.print_exc()
         
         return separate_data
 
-    def _extract_financial_sheet_data(self, worksheet, sheet_name):
-        """개별 재무제표 시트에서 데이터 추출 (A열=계정명, B열=값)"""
+    def _get_sheet_title(self, worksheet):
+        """시트의 제목 찾기 (처음 10행에서)"""
+        try:
+            for row_idx in range(1, min(11, worksheet.max_row + 1)):
+                for col_idx in range(1, min(4, worksheet.max_column + 1)):
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    if cell.value and isinstance(cell.value, str):
+                        value = str(cell.value).strip()
+                        if len(value) > 5 and ('재무상태표' in value or '손익계산서' in value or 
+                                               '현금흐름표' in value or '자본변동표' in value or
+                                               '포괄손익' in value):
+                            return value
+            return ""
+        except:
+            return ""
+
+    def _extract_financial_sheet_data_v2(self, worksheet, sheet_name):
+        """개별 재무제표 시트에서 데이터 추출 (완전히 새로운 접근)"""
         data = []
         
         try:
-            # 데이터 행들 추출 (보통 6행부터)
-            for row in worksheet.iter_rows(values_only=True, min_row=6, max_row=100):
-                if not row or len(row) < 2:
-                    continue
-                    
-                # A열: 계정명
-                account_name = row[0]
-                if not account_name or not isinstance(account_name, str):
-                    continue
-                    
-                account_name = str(account_name).strip()
+            print(f"\n      🔍 {sheet_name} 데이터 추출 중...")
+            
+            # 시트 전체를 스캔하여 패턴 파악
+            account_col = None  # 계정명이 있는 열
+            value_col = None    # 값이 있는 열
+            data_rows = []      # 실제 데이터가 있는 행들
+            
+            # 1. 계정명과 값이 있는 열 찾기 (처음 100행 검사)
+            for row_idx in range(1, min(101, worksheet.max_row + 1)):
+                row_values = []
+                for col_idx in range(1, min(11, worksheet.max_column + 1)):
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    row_values.append(cell.value)
                 
-                # 유효한 계정명 필터링
-                if (len(account_name) > 2 and 
-                    not account_name.startswith(('[', '주석', 'Index')) and
-                    not account_name.endswith(('영역]', '항목', '코드')) and
-                    '개요' not in account_name):
+                # 계정명 열과 값 열 찾기
+                for i, val in enumerate(row_values[:-1]):  # 마지막 열 제외
+                    if val and isinstance(val, str) and len(str(val).strip()) > 2:
+                        # 다음 열에 숫자가 있는지 확인
+                        next_val = row_values[i + 1] if i + 1 < len(row_values) else None
+                        if next_val and (isinstance(next_val, (int, float)) or 
+                                       (isinstance(next_val, str) and self._is_numeric_string(next_val))):
+                            if account_col is None:
+                                account_col = i
+                                value_col = i + 1
+                            data_rows.append(row_idx)
+                            break
+            
+            if account_col is None or value_col is None:
+                print(f"      ⚠️ 데이터 구조를 파악할 수 없습니다.")
+                return data
+                
+            print(f"      📍 계정명 열: {self._get_column_letter(account_col)}열, 값 열: {self._get_column_letter(value_col)}열")
+            print(f"      📍 데이터 행 수: {len(set(data_rows))}개")
+            
+            # 2. 실제 데이터 추출
+            processed_accounts = set()  # 중복 제거용
+            
+            for row_idx in sorted(set(data_rows)):
+                # 계정명 가져오기
+                account_cell = worksheet.cell(row=row_idx, column=account_col + 1)
+                account_name = str(account_cell.value).strip() if account_cell.value else ''
+                
+                # 값 가져오기
+                value_cell = worksheet.cell(row=row_idx, column=value_col + 1)
+                raw_value = value_cell.value
+                
+                # 유효성 검사
+                if not account_name or len(account_name) < 2:
+                    continue
                     
-                    # B열: 값 추출
-                    value = None
-                    if len(row) > 1 and isinstance(row[1], (int, float)) and abs(row[1]) >= 1000:
-                        value = row[1]
-                    
-                    data.append({
-                        'account': account_name,
-                        'value': value,
-                        'formatted_value': self._format_number_for_archive(value) if value else ''
-                    })
-        
+                # 명백한 헤더나 메타데이터 제외
+                skip_patterns = ['[', '(단위', '단위:', '주석', 'Index', 'Sheet', '합계', '총계']
+                if any(pattern in account_name for pattern in skip_patterns):
+                    continue
+                
+                # 중복 제거 (같은 계정명이 여러 번 나올 수 있음)
+                account_key = f"{account_name}_{row_idx}"
+                if account_key in processed_accounts:
+                    continue
+                processed_accounts.add(account_key)
+                
+                # 값 처리
+                value = None
+                if raw_value is not None:
+                    if isinstance(raw_value, (int, float)):
+                        value = raw_value
+                    elif isinstance(raw_value, str):
+                        value = self._parse_numeric_string(raw_value)
+                
+                # 데이터 추가
+                data.append({
+                    'account': account_name,
+                    'value': value,
+                    'formatted_value': self._format_number_for_archive(value) if value else '',
+                    'row': row_idx
+                })
+            
+            # 결과 요약
+            valid_count = len([d for d in data if d['value'] is not None])
+            print(f"      ✅ 추출 완료: 총 {len(data)}개 계정 (값 있음: {valid_count}개)")
+            
         except Exception as e:
-            print(f"      ⚠️ 시트 데이터 추출 실패: {str(e)}")
+            print(f"      ❌ 데이터 추출 실패: {str(e)}")
+            import traceback
+            traceback.print_exc()
         
         return data
 
+    def _is_numeric_string(self, value):
+        """문자열이 숫자인지 확인"""
+        if not isinstance(value, str):
+            return False
+        try:
+            clean_str = str(value).replace(',', '').replace('(', '-').replace(')', '').strip()
+            if clean_str and clean_str != '-':
+                float(clean_str)
+                return True
+        except:
+            pass
+        return False
+
+    def _parse_numeric_string(self, value):
+        """문자열을 숫자로 변환"""
+        try:
+            clean_str = str(value).replace(',', '').replace('(', '-').replace(')', '').strip()
+            if clean_str and clean_str != '-' and clean_str != '0':
+                return float(clean_str)
+        except:
+            pass
+        return None
+
+    def _extract_financial_sheet_data(self, worksheet, sheet_name):
+        """개별 재무제표 시트에서 데이터 추출 (디버깅 강화)"""
+        data = []
+        
+        try:
+            print(f"\n      🔍 {sheet_name} 시트 분석 시작")
+            print(f"      📊 시트 크기: {worksheet.max_row}행 x {worksheet.max_column}열")
+            
+            # 처음 10행의 데이터 구조 확인 (디버깅용)
+            print(f"      📋 처음 10행 데이터 구조:")
+            for row_idx in range(1, min(11, worksheet.max_row + 1)):
+                row_data = []
+                for col_idx in range(1, min(6, worksheet.max_column + 1)):
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    if cell.value is not None:
+                        row_data.append(f"{self._get_column_letter(col_idx-1)}:{repr(cell.value)[:30]}")
+                if row_data:
+                    print(f"        행{row_idx}: {', '.join(row_data)}")
+            
+            # 모든 행을 검사하여 실제 데이터 구조 파악
+            data_start_row = None
+            data_end_row = None
+            
+            # 전체 시트 스캔하여 데이터 영역 찾기
+            for row_idx in range(1, min(worksheet.max_row + 1, 500)):
+                row = list(worksheet.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True))[0]
+                
+                # A열과 B열에 모두 데이터가 있는 행 찾기
+                if row and len(row) >= 2 and row[0] and row[1]:
+                    a_val = str(row[0]).strip() if row[0] else ''
+                    b_val = row[1]
+                    
+                    # A열이 계정명이고 B열이 숫자인 경우
+                    if (len(a_val) > 1 and 
+                        not a_val.startswith(('[', 'Index', '(단위', '단위:')) and
+                        not a_val.endswith(('영역]', '코드'))):
+                        
+                        # B열이 숫자인지 확인
+                        is_numeric = False
+                        if isinstance(b_val, (int, float)):
+                            is_numeric = True
+                        elif isinstance(b_val, str):
+                            try:
+                                clean_str = str(b_val).replace(',', '').replace('(', '-').replace(')', '').strip()
+                                if clean_str and clean_str != '-':
+                                    float(clean_str)
+                                    is_numeric = True
+                            except:
+                                pass
+                        
+                        if is_numeric:
+                            if data_start_row is None:
+                                data_start_row = row_idx
+                            data_end_row = row_idx
+            
+            print(f"      📍 데이터 영역: {data_start_row}행 ~ {data_end_row}행")
+            
+            if data_start_row is None:
+                print(f"      ⚠️ 데이터를 찾을 수 없습니다!")
+                return data
+            
+            # 실제 데이터 추출
+            extracted_count = 0
+            skipped_count = 0
+            
+            for row_idx in range(data_start_row, min(data_end_row + 1, 500)):
+                row = list(worksheet.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True))[0]
+                
+                if not row or len(row) < 2:
+                    continue
+                
+                # A열: 계정명
+                account_name = row[0]
+                if not account_name:
+                    continue
+                
+                account_name = str(account_name).strip()
+                
+                # 필터링 조건 (매우 완화)
+                if len(account_name) < 2:
+                    skipped_count += 1
+                    continue
+                    
+                # 명백한 헤더나 메타데이터만 제외
+                skip_keywords = ['[', 'Index', '(단위', '단위:', '영역]', '코드', '주석', '개요']
+                if any(keyword in account_name for keyword in skip_keywords):
+                    skipped_count += 1
+                    print(f"        ⏭️ 건너뜀: {account_name}")
+                    continue
+                
+                # B열 값 추출
+                value = None
+                raw_value = row[1] if len(row) > 1 else None
+                
+                if raw_value is not None and raw_value != '' and str(raw_value) != 'None':
+                    # 숫자 확인
+                    if isinstance(raw_value, (int, float)):
+                        value = raw_value
+                    # 문자열인 경우 숫자 변환 시도
+                    elif isinstance(raw_value, str):
+                        try:
+                            clean_str = str(raw_value).replace(',', '').replace('(', '-').replace(')', '').strip()
+                            if clean_str and clean_str != '-' and clean_str != '0':
+                                value = float(clean_str)
+                        except:
+                            pass
+                
+                # 데이터 추가 (값이 없어도 계정명은 저장)
+                data.append({
+                    'account': account_name,
+                    'value': value,
+                    'formatted_value': self._format_number_for_archive(value) if value else '',
+                    'row': row_idx
+                })
+                extracted_count += 1
+                
+                # 처음 몇 개 데이터 출력 (디버깅용)
+                if extracted_count <= 5:
+                    print(f"        ✅ 추출: {account_name} = {value}")
+            
+            # 결과 요약
+            valid_count = len([d for d in data if d['value'] is not None])
+            print(f"      📊 추출 결과: 총 {extracted_count}개 계정 (값 있음: {valid_count}개, 건너뜀: {skipped_count}개)")
+            
+        except Exception as e:
+            print(f"      ❌ 시트 데이터 추출 실패: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        
+        return data
+
+    def _find_data_start_row(self, worksheet):
+        """데이터 시작 행 동적으로 찾기 (B열 기준)"""
+        try:
+            # 첫 50행 내에서 B열에 숫자 데이터가 있는 첫 행 찾기
+            for row_idx in range(1, min(51, worksheet.max_row + 1)):
+                row = worksheet[row_idx]
+                
+                # B열(2번째 열)만 확인
+                if len(row) >= 2:
+                    cell = row[1]  # B열 (0-based index에서 1)
+                    if cell and cell.value is not None:
+                        if isinstance(cell.value, (int, float)):
+                            # 이전 행부터 시작 (헤더 포함을 위해)
+                            return max(1, row_idx - 1)
+                        elif isinstance(cell.value, str):
+                            try:
+                                clean_str = str(cell.value).replace(',', '').replace('(', '-').replace(')', '').strip()
+                                if clean_str and clean_str != '-':
+                                    float(clean_str)
+                                    # 이전 행부터 시작 (헤더 포함을 위해)
+                                    return max(1, row_idx - 1)
+                            except:
+                                pass
+            
+            # 기본값
+            return 6
+            
+        except Exception as e:
+            print(f"        ⚠️ 시작 행 찾기 실패: {str(e)}")
+            return 6
+
     def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index, notes_type='connected'):
-        """XBRL 재무제표주석 Archive 업데이트 (스마트 중분류 감지 적용)"""
+        """XBRL 재무제표주석 Archive 업데이트 (실제 주석 시트 내용 배치 업데이트, 수정됨)"""
         try:
             print(f"  📝 XBRL 주석 데이터 분석 중... ({notes_type})")
             
@@ -786,7 +1244,7 @@ class DartExcelDownloader:
             report_date = datetime.now().strftime('%Y-%m-%d')
             quarter_info = self._get_quarter_info()
             
-            # STEP 1: 스마트 중분류 감지로 주석 데이터 준비
+            # STEP 1: 모든 주석 데이터를 메모리에서 준비 (수정된 버전)
             all_notes_account_data, all_notes_value_data = self._prepare_notes_data_for_batch_update(wb, notes_type)
             
             # STEP 2: 배치 업데이트
@@ -820,421 +1278,425 @@ class DartExcelDownloader:
             print(f"📋 상세 오류: {traceback.format_exc()}")
 
     def _prepare_notes_data_for_batch_update(self, wb, notes_type):
-        """주석 데이터 준비 (스마트 중분류 감지 적용)"""
+        """주석 데이터를 배치 업데이트용으로 준비 (모든 데이터 포함)"""
         try:
             print(f"  🔄 주석 배치 업데이트용 데이터 준비 중... ({notes_type})")
             
-            # D8xxxxx 주석 시트들 필터링
-            if notes_type == 'connected':
-                target_sheets = [name for name in wb.sheetnames if name.startswith('D8') and name.endswith('0')]
-            else:
-                target_sheets = [name for name in wb.sheetnames if name.startswith('D8') and name.endswith('5')]
-            
-            print(f"    📄 {notes_type} 주석 시트 {len(target_sheets)}개 발견")
-            
-            # 전체 데이터 통합
             all_notes_account_data = []
             all_notes_value_data = []
             
-            total_categories = 0
-            total_data_items = 0
-            items_with_values = 0
+            # D8로 시작하는 모든 주석 시트 필터링
+            if notes_type == 'connected':
+                # 연결: D8로 시작하고 0으로 끝나는 시트
+                target_sheets = [name for name in wb.sheetnames if name.startswith('D8') and (name.endswith('0') or '연결' in name)]
+            else:  # separate
+                # 별도: D8로 시작하고 5로 끝나는 시트
+                target_sheets = [name for name in wb.sheetnames if name.startswith('D8') and (name.endswith('5') or '별도' in name)]
             
-            # 각 주석 시트 처리
-            for sheet_name in target_sheets:
-                try:
-                    sheet_data = self._extract_notes_sheet_data(wb[sheet_name], sheet_name)
-                    if sheet_data:
-                        # 시트 제목 추가
-                        all_notes_account_data.append([sheet_data['title']])
-                        all_notes_value_data.append([''])
-                        
-                        # 각 항목들 배치
-                        for item in sheet_data['items']:
-                            if item.get('is_category', False):
-                                total_categories += 1
-                                display_name = f"● {item['original_name']}"
-                            else:
-                                total_data_items += 1
-                                original_name = item.get('original_name', item['name'])
-                                display_name = f"  └ {original_name}"
-                                
-                                # 값이 있는 항목 카운트
-                                if item['formatted_value']:
-                                    items_with_values += 1
-                            
-                            all_notes_account_data.append([display_name])
-                            all_notes_value_data.append([item['formatted_value']])
-                        
-                        # 구분선
-                        all_notes_account_data.append([''])
-                        all_notes_value_data.append([''])
-                        
-                        print(f"      ✅ {sheet_name}: {len(sheet_data['items'])}개 항목 추가")
+            print(f"    📄 {notes_type} 주석 시트 {len(target_sheets)}개 발견")
+            
+            # 각 주석 시트의 모든 데이터 추출
+            for sheet_name in sorted(target_sheets):
+                worksheet = wb[sheet_name]
+                
+                # 시트 제목 추가
+                sheet_title = f"[{sheet_name}] 주석"
+                all_notes_account_data.append([sheet_title])
+                all_notes_value_data.append([''])
+                
+                # 모든 행 처리 (필터링 최소화)
+                item_count = 0
+                max_rows = min(worksheet.max_row, 1000)
+                
+                for row_idx in range(1, max_rows + 1):
+                    row = list(worksheet.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True))[0]
                     
-                except Exception as e:
-                    print(f"      ❌ {sheet_name} 처리 실패: {str(e)}")
-                    continue
+                    if not row:
+                        continue
+                    
+                    # 첫 번째 비어있지 않은 셀 찾기
+                    item_name = None
+                    item_col = -1
+                    
+                    for col_idx, cell in enumerate(row):
+                        if cell and str(cell).strip():
+                            item_name = str(cell).strip()
+                            item_col = col_idx
+                            break
+                    
+                    if not item_name or len(item_name) < 2:
+                        continue
+                    
+                    # 최소한의 필터링
+                    if item_name.startswith('[') or item_name.startswith('(단위'):
+                        continue
+                    
+                    # 값 찾기 (item_name 다음 열부터)
+                    value = None
+                    value_type = None
+                    
+                    if item_col < len(row) - 1:
+                        for val_idx in range(item_col + 1, len(row)):
+                            if row[val_idx] is not None and str(row[val_idx]).strip():
+                                cell_value = row[val_idx]
+                                
+                                # 숫자 확인
+                                if isinstance(cell_value, (int, float)):
+                                    value = cell_value
+                                    value_type = 'number'
+                                    break
+                                elif isinstance(cell_value, str):
+                                    str_val = str(cell_value).strip()
+                                    # 숫자 변환 시도
+                                    try:
+                                        clean_num = str_val.replace(',', '').replace('(', '-').replace(')', '').strip()
+                                        if clean_num and clean_num != '-':
+                                            value = float(clean_num)
+                                            value_type = 'number'
+                                            break
+                                    except:
+                                        # 텍스트로 처리
+                                        if len(str_val) >= 2:
+                                            value = str_val
+                                            value_type = 'text'
+                                            break
+                    
+                    # 들여쓰기 표시
+                    indent_prefix = "  " * item_col if item_col > 0 else ""
+                    display_name = f"{indent_prefix}{item_name}"
+                    
+                    # 데이터 추가
+                    all_notes_account_data.append([display_name])
+                    
+                    # 값 포맷팅
+                    if value is not None:
+                        formatted_value = self._format_notes_value(value, value_type)
+                        all_notes_value_data.append([formatted_value])
+                    else:
+                        all_notes_value_data.append([''])
+                    
+                    item_count += 1
+                
+                if item_count > 0:
+                    print(f"      ✅ {sheet_name}: {item_count}개 항목 추가")
+                    # 구분을 위한 빈 행 추가
+                    all_notes_account_data.append([''])
+                    all_notes_value_data.append([''])
             
-            # 개선된 통계 출력
-            data_value_percentage = (items_with_values / total_data_items * 100) if total_data_items > 0 else 0
-            
-            print(f"    📋 주석 준비 완료:")
-            print(f"      - 중분류: {total_categories}개")
-            print(f"      - 데이터 항목: {total_data_items}개")
-            print(f"      - 값 있는 데이터: {items_with_values}개 ({data_value_percentage:.1f}%)")
-            print(f"      - 전체 Archive 행: {len(all_notes_account_data)}개")
-            
-            if data_value_percentage < 30:
-                print(f"    ⚠️ 경고: 데이터 항목 중 값이 있는 비율이 {data_value_percentage:.1f}%로 낮습니다.")
-            else:
-                print(f"    ✅ 양호: 데이터 항목 중 {data_value_percentage:.1f}%에서 값을 추출했습니다.")
+            # 통계 출력
+            total_items = len([row for row in all_notes_account_data if row[0] and not row[0].startswith('[')])
+            print(f"    📊 총 주석 항목: {total_items}개")
             
             return all_notes_account_data, all_notes_value_data
             
         except Exception as e:
             print(f"  ❌ 주석 배치 데이터 준비 실패: {str(e)}")
-            return None, None
+            import traceback
+            traceback.print_exc()
+            return [], []
 
     def _extract_notes_sheet_data(self, worksheet, sheet_name):
-        """개별 주석 시트에서 A열 항목과 B열 값 추출 (스마트 중분류 감지)"""
+        """개별 주석 시트에서 데이터 추출 (반복 텍스트를 세분류로 처리)"""
         try:
             sheet_data = {
-                'title': '',
+                'title': sheet_name,
                 'items': []
             }
             
-            # 제목 추출
-            for row in worksheet.iter_rows(min_row=1, max_row=5, min_col=1, max_col=1, values_only=True):
-                if row[0] and isinstance(row[0], str) and sheet_name in row[0]:
-                    sheet_data['title'] = row[0]
-                    break
+            print(f"\n      🔍 {sheet_name} 주석 시트 분석 중...")
             
-            if not sheet_data['title']:
-                sheet_data['title'] = f"[{sheet_name}] 주석"
+            # 전체 시트 스캔
+            max_row = min(worksheet.max_row, 1000)
+            max_col = min(worksheet.max_column, 20)
             
-            print(f"      📋 {sheet_name} 데이터 추출 시작...")
+            # 모든 셀 데이터를 메모리에 로드
+            all_data = []
+            for row in worksheet.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col, values_only=True):
+                all_data.append(list(row))
             
-            # STEP 1: 전체 시트를 먼저 스캔하여 중복 항목 찾기
-            duplicate_items, category_structure = self._analyze_sheet_structure(worksheet)
+            print(f"      📊 시트 크기: {len(all_data)}행 x {max_col}열")
             
-            if duplicate_items:
-                print(f"        🔍 중복 항목 발견: {list(duplicate_items)}")
-                print(f"        📂 중분류 구조 필요: {len(category_structure)}개 영역")
-            else:
-                print(f"        ✅ 중복 없음: 평면 구조로 처리")
+            # STEP 1: 반복되는 텍스트 패턴 찾기 (세분류 판단용)
+            text_frequency = {}
+            text_first_occurrence = {}
             
-            # STEP 2: 실제 데이터 추출 (중복 정보 활용)
-            total_extracted = 0
-            value_extracted = 0
-            category_created = 0
+            for row_idx, row in enumerate(all_data):
+                if not row:
+                    continue
+                    
+                # 각 열의 텍스트 수집
+                for col_idx, cell in enumerate(row):
+                    if cell and isinstance(cell, str):
+                        text = str(cell).strip()
+                        if len(text) >= 2 and not text.startswith(('[', '(단위')):
+                            if text not in text_frequency:
+                                text_frequency[text] = 0
+                                text_first_occurrence[text] = row_idx
+                            text_frequency[text] += 1
+            
+            # 3번 이상 반복되는 텍스트는 세분류로 간주
+            repeated_texts = set()
+            for text, count in text_frequency.items():
+                if count >= 3:
+                    repeated_texts.add(text)
+                    print(f"        📌 반복 텍스트 발견 (세분류): '{text}' ({count}번 반복)")
+            
+            # STEP 2: 중분류 찾기 및 데이터 구조화
             current_category = ""
+            category_start_row = -1
+            items_buffer = []  # 임시 버퍼
             
-            for row_idx, row in enumerate(worksheet.iter_rows(min_row=3, max_row=200, values_only=True), start=3):
-                if not row or len(row) < 1:
-                    continue
-                    
-                item_name = row[0]
-                if not item_name or not isinstance(item_name, str):
-                    continue
-                    
-                item_name = str(item_name).strip()
-                
-                # 무의미한 항목 제외
-                if (len(item_name) <= 1 or 
-                    item_name.startswith(('[', 'Index', '구분', '※', '#', '*')) or
-                    item_name.endswith(('영역]', '코드', '번호')) or
-                    item_name in ['', '-', '해당없음', '없음']):
+            for row_idx, row in enumerate(all_data):
+                if not row:
                     continue
                 
-                # 중분류 감지: 중복 항목이 있을 때만 + 실제 중분류 헤더인 경우
-                is_category = False
-                if duplicate_items and self._is_actual_category_header(item_name, row_idx, worksheet, row, category_structure):
-                    is_category = True
-                    current_category = item_name
-                    category_created += 1
-                    print(f"        🔶 중분류 생성: {current_category}")
-                    
-                    sheet_data['items'].append({
-                        'name': f"[중분류] {current_category}",
-                        'value': None,
-                        'formatted_value': '',
-                        'category': current_category,
-                        'is_category': True,
-                        'original_name': current_category
-                    })
-                    total_extracted += 1
+                # 첫 번째 비어있지 않은 셀 찾기
+                first_text = None
+                first_col = -1
+                
+                for col_idx, cell in enumerate(row):
+                    if cell and str(cell).strip():
+                        first_text = str(cell).strip()
+                        first_col = col_idx
+                        break
+                
+                if not first_text or len(first_text) < 2:
                     continue
                 
-                # 세분류 처리
+                # 제외할 패턴
+                if any(skip in first_text for skip in ['[', 'Index', '(단위', '단위:', 'Sheet']):
+                    continue
+                
+                # 반복되는 텍스트인지 확인
+                is_repeated = first_text in repeated_texts
+                
+                # 중분류 판단: 반복되지 않는 텍스트이고, 이후에 반복 텍스트가 나오는 경우
+                if not is_repeated and first_col == 0:  # 들여쓰기 없는 경우
+                    # 다음 행들 확인하여 반복 텍스트가 있는지 확인
+                    has_repeated_children = False
+                    for check_idx in range(row_idx + 1, min(row_idx + 10, len(all_data))):
+                        check_row = all_data[check_idx]
+                        if check_row:
+                            for check_cell in check_row:
+                                if check_cell and str(check_cell).strip() in repeated_texts:
+                                    has_repeated_children = True
+                                    break
+                            if has_repeated_children:
+                                break
+                    
+                    if has_repeated_children or (row_idx > 0 and len(items_buffer) > 2):
+                        # 이전 버퍼 처리
+                        if items_buffer and current_category:
+                            self._flush_items_buffer(sheet_data, current_category, items_buffer)
+                            items_buffer = []
+                        
+                        # 새로운 중분류로 설정
+                        current_category = first_text
+                        category_start_row = row_idx
+                        
+                        sheet_data['items'].append({
+                            'name': f"[중분류] {first_text}",
+                            'value': None,
+                            'formatted_value': '',
+                            'category': first_text,
+                            'is_category': True,
+                            'original_name': first_text
+                        })
+                        continue
+                
+                # 일반 데이터 행 처리
+                # 값 찾기
                 value = None
-                raw_value = None
+                value_type = None
                 
-                # B열 값 추출
-                if len(row) > 1:
-                    raw_value = row[1]
-                    value = self._extract_cell_value(raw_value, item_name)
-                    if value is not None:
-                        value_extracted += 1
+                # 같은 행의 다음 셀들에서 값 찾기
+                for val_idx in range(first_col + 1, len(row)):
+                    if row[val_idx] is not None:
+                        value, value_type = self._extract_cell_value(row[val_idx])
+                        if value is not None:
+                            break
                 
-                # 항목 추가 (값이 없어도 의미있는 항목명이면 포함)
-                if value is not None or self._is_meaningful_item_name(item_name):
-                    total_extracted += 1
-                    
-                    # 고유한 항목명 생성
-                    unique_name = self._generate_unique_name(item_name, current_category, sheet_data, row_idx, duplicate_items)
-                    
-                    sheet_data['items'].append({
-                        'name': unique_name,
-                        'original_name': item_name,
-                        'value': value,
-                        'formatted_value': self._format_notes_value_enhanced(value) if value is not None else '',
-                        'category': current_category,
-                        'is_category': False,
-                        'row_number': row_idx,
-                        'raw_value': raw_value
-                    })
-                    
-                    if value is not None:
-                        print(f"        💾 값 저장: {item_name} = {str(value)[:50]}...")
+                # 항목 추가
+                item = {
+                    'name': f"{current_category}_{first_text}" if current_category else first_text,
+                    'original_name': first_text,
+                    'value': value,
+                    'formatted_value': self._format_notes_value(value, value_type) if value is not None else '',
+                    'category': current_category,
+                    'is_category': False,
+                    'row_number': row_idx,
+                    'value_type': value_type,
+                    'indent_level': first_col,
+                    'is_repeated': is_repeated
+                }
+                
+                # 반복되는 텍스트면 버퍼에 추가
+                if is_repeated and current_category:
+                    items_buffer.append(item)
                 else:
-                    print(f"        ⚠️ 값 없음: {item_name} (raw_value: {raw_value})")
+                    # 버퍼 처리 후 일반 항목 추가
+                    if items_buffer and current_category:
+                        self._flush_items_buffer(sheet_data, current_category, items_buffer)
+                        items_buffer = []
+                    sheet_data['items'].append(item)
             
-            # 통계 출력
-            data_items = total_extracted - category_created
-            value_percentage = (value_extracted / data_items * 100) if data_items > 0 else 0
+            # 마지막 버퍼 처리
+            if items_buffer and current_category:
+                self._flush_items_buffer(sheet_data, current_category, items_buffer)
             
-            print(f"      ✅ {sheet_name} 추출 완료:")
-            print(f"        - 중분류: {category_created}개")
-            print(f"        - 데이터 항목: {data_items}개")
-            print(f"        - 값 있는 항목: {value_extracted}개 ({value_percentage:.1f}%)")
+            # 결과 요약
+            if sheet_data['items']:
+                category_count = len([item for item in sheet_data['items'] if item.get('is_category')])
+                value_count = len([item for item in sheet_data['items'] if item.get('value') is not None])
+                text_count = len([item for item in sheet_data['items'] if item.get('value_type') == 'text'])
+                number_count = len([item for item in sheet_data['items'] if item.get('value_type') == 'number'])
+                repeated_count = len([item for item in sheet_data['items'] if item.get('is_repeated')])
+                
+                print(f"      ✅ 추출 완료: 총 {len(sheet_data['items'])}개 항목")
+                print(f"         - 중분류: {category_count}개")
+                print(f"         - 반복 세분류: {repeated_count}개")
+                print(f"         - 값 있음: {value_count}개 (숫자: {number_count}, 텍스트: {text_count})")
             
             return sheet_data if sheet_data['items'] else None
             
         except Exception as e:
             print(f"      ❌ 주석 시트 {sheet_name} 데이터 추출 실패: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
 
-    def _analyze_sheet_structure(self, worksheet):
-        """시트 구조 분석: 중복 항목 및 중분류 구조 파악"""
-        try:
-            all_items = []
-            potential_categories = []
+    def _flush_items_buffer(self, sheet_data, category, items_buffer):
+        """버퍼에 있는 반복 항목들을 처리"""
+        if not items_buffer:
+            return
             
-            # 전체 시트 스캔
-            for row_idx, row in enumerate(worksheet.iter_rows(min_row=3, max_row=200, values_only=True), start=3):
-                if not row or len(row) < 1:
-                    continue
-                    
-                item_name = row[0]
-                if not item_name or not isinstance(item_name, str):
-                    continue
-                    
-                item_name = str(item_name).strip()
+        # 반복되는 텍스트 이름
+        repeated_text = items_buffer[0]['original_name']
+        
+        # 같은 반복 텍스트끼리 그룹화
+        for idx, item in enumerate(items_buffer):
+            # 고유한 이름 생성 (중분류_반복텍스트_번호)
+            unique_name = f"{category}_{repeated_text}_{idx + 1}"
+            item['name'] = unique_name
+            sheet_data['items'].append(item)
+
+    def _extract_cell_value(self, cell_value):
+        """셀 값에서 실제 값과 타입 추출"""
+        if cell_value is None:
+            return None, None
+            
+        # 숫자인 경우
+        if isinstance(cell_value, (int, float)):
+            return cell_value, 'number'
+        
+        # 문자열인 경우
+        elif isinstance(cell_value, str):
+            str_val = str(cell_value).strip()
+            if not str_val or str_val == '-':
+                return None, None
                 
-                # 유효한 항목명만 수집
-                if (len(item_name) > 1 and 
-                    not item_name.startswith(('[', 'Index', '구분')) and
-                    not item_name.endswith(('영역]', '코드')) and
-                    item_name not in ['', '-', '해당없음']):
-                    
-                    # 잠재적 중분류 감지
-                    if self._looks_like_category_header(item_name, row):
-                        potential_categories.append({
-                            'name': item_name,
-                            'row': row_idx,
-                            'items_below': []
-                        })
-                    else:
-                        all_items.append(item_name)
-                        # 마지막 중분류에 속하는 항목으로 추가
-                        if potential_categories:
-                            potential_categories[-1]['items_below'].append(item_name)
+            # 숫자 변환 시도
+            try:
+                clean_num = str_val.replace(',', '').replace('(', '-').replace(')', '').strip()
+                if clean_num and clean_num != '-' and clean_num.replace('-', '').replace('.', '').isdigit():
+                    return float(clean_num), 'number'
+            except:
+                pass
             
-            # 중복 항목 찾기
-            item_counts = Counter(all_items)
-            duplicate_items = {item for item, count in item_counts.items() if count > 1}
-            
-            # 중복이 있는 경우에만 중분류 구조 생성
-            category_structure = []
-            if duplicate_items:
-                for cat in potential_categories:
-                    # 이 중분류 아래에 중복 항목이 있는지 확인
-                    has_duplicates = any(item in duplicate_items for item in cat['items_below'])
-                    if has_duplicates:
-                        category_structure.append(cat)
-            
-            return duplicate_items, category_structure
-            
-        except Exception as e:
-            print(f"        ⚠️ 시트 구조 분석 실패: {str(e)}")
-            return set(), []
+            # 텍스트로 처리
+            if len(str_val) >= 2:
+                return str_val, 'text'
+        
+        return None, None
 
-    def _looks_like_category_header(self, item_name, row):
-        """잠재적 중분류 헤더인지 판단 (느슨한 조건)"""
+    def _is_category_header(self, item_name, row_idx, worksheet):
+        """항목이 중분류 헤더인지 판단"""
         try:
-            # 명시적 중분류 표시
-            if any(pattern in item_name for pattern in ['개요]', '구성요소]', '항목]', '영역]']):
-                return True
-            
-            # B열이 비어있고 특정 키워드 포함
-            has_value = (len(row) > 1 and row[1] is not None and 
-                        (isinstance(row[1], (int, float)) and row[1] != 0) or
-                        (isinstance(row[1], str) and len(str(row[1]).strip()) > 3))
-            
-            if not has_value:
-                category_keywords = [
-                    '비용의 성격', '성격별', '분류', '구성내역', '내역', '현황',
-                    '공정가치', '확정급여', '재무위험', '금융자산', '리스'
-                ]
-                
-                if any(keyword in item_name for keyword in category_keywords):
-                    return True
-            
-            return False
-            
-        except Exception as e:
-            return False
-
-    def _is_actual_category_header(self, item_name, row_idx, worksheet, row, category_structure):
-        """실제 중분류 헤더인지 최종 판단 (중복 구조 기반)"""
-        try:
-            # category_structure에 포함된 중분류만 실제로 생성
-            for cat_info in category_structure:
-                if cat_info['name'] == item_name and cat_info['row'] == row_idx:
-                    return True
-            
-            return False
-            
-        except Exception as e:
-            return False
-
-    def _generate_unique_name(self, item_name, current_category, sheet_data, row_idx, duplicate_items):
-        """고유한 항목명 생성 (중복 여부에 따라)"""
-        try:
-            # 중복 항목이 아니면 원본 이름 그대로
-            if item_name not in duplicate_items:
-                return item_name
-            
-            # 중복 항목인 경우
-            if current_category:
-                # 중분류가 있으면 "중분류_세분류" 형태
-                unique_name = f"{current_category}_{item_name}"
-                
-                # 같은 중분류에서 같은 이름이 중복되는 경우 번호 추가
-                duplicate_count = len([item for item in sheet_data['items'] 
-                                     if item.get('category') == current_category and 
-                                        item.get('original_name') == item_name and
-                                        not item.get('is_category', False)])
-                if duplicate_count > 0:
-                    unique_name = f"{current_category}_{item_name}_{duplicate_count + 1}"
-            else:
-                # 중분류가 없는데 중복이면 행번호 추가
-                unique_name = f"{item_name}_행{row_idx}"
-            
-            return unique_name
-            
-        except Exception as e:
-            return f"{item_name}_행{row_idx}"
-
-    def _extract_cell_value(self, raw_value, item_name):
-        """셀 값 추출 (개선된 로직)"""
-        try:
-            if raw_value is None:
-                return None
-            
-            if isinstance(raw_value, (int, float)):
-                print(f"        📊 숫자 값: {item_name} = {raw_value}")
-                return raw_value
-            elif isinstance(raw_value, str):
-                value_str = str(raw_value).strip()
-                
-                if value_str and value_str not in ['-', '', '해당없음', '없음', 'N/A', 'n/a']:
-                    # 숫자 변환 시도
-                    try:
-                        clean_num = value_str.replace(',', '').replace('(', '-').replace(')', '').strip()
-                        if clean_num and clean_num not in ['-', '']:
-                            if '.' in clean_num or clean_num.replace('-', '').replace('.', '').isdigit():
-                                value = float(clean_num)
-                                print(f"        💰 숫자 변환: {item_name} = {value}")
-                                return value
-                    except:
-                        pass
-                    
-                    # 의미있는 텍스트인지 확인 (5자 이상)
-                    if len(value_str) > 5:
-                        print(f"        📝 텍스트 값: {item_name} = {value_str[:50]}...")
-                        return value_str
-            else:
-                # 기타 타입
-                str_value = str(raw_value) if raw_value else None
-                if str_value and len(str_value) > 3:
-                    print(f"        🔄 타입변환: {item_name} = {str_value[:50]}...")
-                    return str_value
-            
-            return None
-            
-        except Exception as e:
-            return None
-
-    def _is_meaningful_item_name(self, item_name):
-        """A열 항목명만으로도 의미있는지 판단"""
-        try:
-            # 의미있는 항목명 패턴
-            meaningful_patterns = [
-                '계', '합계', '소계', '총계', '금액', '비용', '수익',
-                '자산', '부채', '자본', '현금', '투자', '차입',
-                '리스', '퇴직', '법인세', '배당', '주당', '기간',
-                '일자', '비율', '율', '이자', '할인', '상각'
+            # 방법 1: 패턴 기반 판단
+            category_patterns = [
+                '비용의 성격별',
+                '비용의 성격',
+                '성격별',
+                '매출채권',
+                '재고자산',
+                '유형자산',
+                '무형자산',
+                '투자자산',
+                '부채',
+                '자본',
+                '수익',
+                '비용',
+                '현금흐름',
+                '분류',
+                '구성내역',
+                '내역',
+                '내용',
+                '현황'
             ]
             
-            # 특정 키워드가 포함되어 있으면 의미있는 항목
-            for pattern in meaningful_patterns:
+            # 특정 키워드가 포함된 경우 중분류로 판단
+            for pattern in category_patterns:
                 if pattern in item_name:
                     return True
             
-            # 숫자나 기호가 포함된 경우 (계정 코드 등)
-            if any(char.isdigit() for char in item_name):
-                return True
+            # 방법 2: 셀 스타일 확인 (가능한 경우)
+            try:
+                cell = worksheet.cell(row=row_idx, column=1)
+                if hasattr(cell, 'font') and cell.font and cell.font.bold:
+                    return True
+            except:
+                pass
             
-            # 길이가 충분히 긴 설명적 항목명
-            if len(item_name) > 8:
-                return True
+            # 방법 3: 들여쓰기 확인
+            if not item_name.startswith((' ', '\t')):
+                # 다음 행들이 들여쓰기되어 있는지 확인
+                next_rows_indented = 0
+                for next_row_idx in range(row_idx + 1, min(row_idx + 6, worksheet.max_row + 1)):
+                    try:
+                        next_cell = worksheet.cell(row=next_row_idx, column=1).value
+                        if next_cell and isinstance(next_cell, str) and next_cell.startswith((' ', '\t')):
+                            next_rows_indented += 1
+                    except:
+                        continue
+                
+                # 다음 행들이 들여쓰기되어 있으면 현재 행은 중분류
+                if next_rows_indented >= 2:
+                    return True
             
             return False
             
         except Exception as e:
+            print(f"        ⚠️ 중분류 판단 실패: {str(e)}")
             return False
 
-    def _format_notes_value_enhanced(self, value):
-        """주석 값 포맷팅 (개선된 버전 - 모든 타입의 값 처리)"""
+    def _format_notes_value(self, value, value_type=None):
+        """주석 값 포맷팅 (숫자 및 텍스트 처리)"""
         try:
             if value is None:
                 return ''
             
-            # 숫자인 경우
-            if isinstance(value, (int, float)):
+            # 텍스트인 경우
+            if value_type == 'text' or isinstance(value, str):
+                # 긴 텍스트는 적절히 잘라서 표시
+                text_value = str(value).strip()
+                if len(text_value) > 100:
+                    return text_value[:97] + "..."
+                else:
+                    return text_value
+            
+            # 숫자인 경우 억원 단위로 변환
+            elif isinstance(value, (int, float)):
                 if abs(value) >= 100000000:  # 1억 이상
                     billion_value = value / 100000000
                     return f"{billion_value:.2f}억원"
                 elif abs(value) >= 1000000:  # 100만 이상
                     million_value = value / 1000000
                     return f"{million_value:.1f}백만원"
-                elif abs(value) >= 1000:  # 1천 이상
-                    thousand_value = value / 1000
-                    return f"{thousand_value:.1f}천원"
+                elif abs(value) >= 1000:  # 1000 이상
+                    return f"{value:,.0f}"
                 else:
-                    return str(int(value)) if value == int(value) else str(value)
+                    return str(value)
             
-            # 문자열인 경우 - 길이 제한 없이 보존 (중요한 정보일 수 있음)
-            elif isinstance(value, str):
-                # 너무 긴 텍스트는 요약하되, 중요 정보는 보존
-                if len(value) > 100:
-                    return f"{value[:100]}..." # 100자로 제한
-                else:
-                    return value
-            
-            # 기타 타입
             else:
                 return str(value)
                 
@@ -1271,6 +1733,9 @@ class DartExcelDownloader:
     def _clean_number(self, value):
         """숫자 값 정제"""
         try:
+            if isinstance(value, (int, float)):
+                return float(value)
+            
             str_val = str(value).replace(',', '').replace('(', '-').replace(')', '').strip()
             if not str_val or str_val == '-':
                 return None
