@@ -52,6 +52,52 @@ class DartExcelDownloader:
         # 현재 처리 중인 보고서 정보
         self.current_report = None
 
+        # Archive 시트 행 영역 매핑 설정
+        self._setup_archive_row_mapping()
+
+    def _setup_archive_row_mapping(self):
+        """Archive 시트의 행 영역 매핑 설정"""
+        # 재무제표 Archive 시트 행 매핑
+        self.financial_row_mapping = {
+            # 연결 재무제표
+            'connected': {
+                'D210000': {'start': 7, 'end': 80, 'name': '연결 재무상태표'},
+                'D431410': {'start': 81, 'end': 140, 'name': '연결 손익계산서'},
+                'D520000': {'start': 141, 'end': 200, 'name': '연결 현금흐름표'},
+                'D610000': {'start': 201, 'end': 250, 'name': '연결 자본변동표'}
+            },
+            # 별도 재무제표  
+            'separate': {
+                'D210005': {'start': 257, 'end': 330, 'name': '별도 재무상태표'},
+                'D431415': {'start': 331, 'end': 390, 'name': '별도 손익계산서'},
+                'D520005': {'start': 391, 'end': 450, 'name': '별도 현금흐름표'},
+                'D610005': {'start': 451, 'end': 500, 'name': '별도 자본변동표'}
+            }
+        }
+        
+        # 주석 Archive 시트 행 매핑 (7~500행 활용)
+        self.notes_row_mapping = {
+            '회계정책': {'start': 7, 'end': 30, 'name': '회계정책 및 추정'},
+            '현금및현금성자산': {'start': 31, 'end': 50, 'name': '현금및현금성자산'},
+            '매출채권': {'start': 51, 'end': 80, 'name': '매출채권 및 기타채권'},
+            '재고자산': {'start': 81, 'end': 100, 'name': '재고자산'},
+            '유형자산': {'start': 101, 'end': 140, 'name': '유형자산'},
+            '사용권자산': {'start': 141, 'end': 160, 'name': '사용권자산'},
+            '무형자산': {'start': 161, 'end': 190, 'name': '무형자산'},
+            '관계기업투자': {'start': 191, 'end': 220, 'name': '관계기업투자'},
+            '기타금융자산': {'start': 221, 'end': 250, 'name': '기타금융자산'},
+            '매입채무': {'start': 251, 'end': 280, 'name': '매입채무 및 기타채무'},
+            '기타유동부채': {'start': 281, 'end': 300, 'name': '기타유동부채'},
+            '충당부채': {'start': 301, 'end': 330, 'name': '충당부채'},
+            '확정급여부채': {'start': 331, 'end': 360, 'name': '확정급여부채'},
+            '이연법인세': {'start': 361, 'end': 380, 'name': '이연법인세'},
+            '자본금': {'start': 381, 'end': 410, 'name': '자본금 및 자본변동'},
+            '자본잉여금': {'start': 411, 'end': 430, 'name': '자본잉여금'},
+            '수익인식': {'start': 431, 'end': 460, 'name': '수익인식'},
+            '주당손익': {'start': 461, 'end': 480, 'name': '주당손익'},
+            '법인세비용': {'start': 481, 'end': 500, 'name': '법인세비용'}
+        }
+
     def _check_environment_variables(self):
         """환경변수 확인"""
         print("🔍 환경변수 확인:")
@@ -421,7 +467,7 @@ class DartExcelDownloader:
             print(f"❌ 배치 업로드 실패: {str(e)}")
 
     def _update_xbrl_archive(self):
-        """XBRL Archive 시트 업데이트 (완전 개선 버전)"""
+        """XBRL Archive 시트 업데이트 (연결/별도 구분, M열부터 시작)"""
         print("\n📊 XBRL Archive 시트 업데이트 시작...")
         
         try:
@@ -434,9 +480,15 @@ class DartExcelDownloader:
                 
             if 'notes' in self.results['excel_files']:
                 print("📝 XBRL 재무제표주석 Archive 업데이트 중...")
-                self._update_single_xbrl_archive('Dart_Archive_XBRL_주석', 
+                
+                # 주석은 연결/별도로 분리
+                self._update_single_xbrl_archive('Dart_Archive_XBRL_주석_연결', 
                                                self.results['excel_files']['notes'], 
-                                               'notes')
+                                               'notes_connected')
+                
+                self._update_single_xbrl_archive('Dart_Archive_XBRL_주석_별도', 
+                                               self.results['excel_files']['notes'], 
+                                               'notes_separate')
                 
             print("✅ XBRL Archive 업데이트 완료")
             
@@ -444,7 +496,7 @@ class DartExcelDownloader:
             print(f"❌ XBRL Archive 업데이트 실패: {str(e)}")
 
     def _update_single_xbrl_archive(self, sheet_name, file_path, file_type):
-        """개별 XBRL Archive 시트 업데이트"""
+        """개별 XBRL Archive 시트 업데이트 (연결/별도 구분)"""
         try:
             # Archive 시트 가져오기 또는 생성
             archive_exists = False
@@ -455,15 +507,18 @@ class DartExcelDownloader:
             except gspread.exceptions.WorksheetNotFound:
                 print(f"🆕 새로운 {sheet_name} 시트 생성")
                 time.sleep(2)
-                archive_sheet = self.workbook.add_worksheet(sheet_name, 1000, 100)
+                archive_sheet = self.workbook.add_worksheet(sheet_name, 1000, 20)  # 20열까지 확장
                 time.sleep(2)
             
             # 시트가 새로 생성된 경우 헤더 설정
             if not archive_exists:
-                self._setup_xbrl_archive_header(archive_sheet, file_type)
+                header_type = file_type
+                if file_type.startswith('notes_'):
+                    header_type = 'notes'
+                self._setup_xbrl_archive_header(archive_sheet, header_type)
                 time.sleep(3)
             
-            # 현재 마지막 데이터 열 찾기
+            # 현재 마지막 데이터 열 찾기 (M열부터)
             last_col = self._find_last_data_column(archive_sheet)
             
             # Excel 파일 읽기
@@ -472,8 +527,13 @@ class DartExcelDownloader:
             # 데이터 추출 및 업데이트
             if file_type == 'financial':
                 self._update_xbrl_financial_archive_batch(archive_sheet, wb, last_col)
+            elif file_type == 'notes_connected':
+                self._update_xbrl_notes_archive_batch(archive_sheet, wb, last_col, 'connected')
+            elif file_type == 'notes_separate':
+                self._update_xbrl_notes_archive_batch(archive_sheet, wb, last_col, 'separate')
             else:
-                self._update_xbrl_notes_archive_batch(archive_sheet, wb, last_col)
+                # 기본 주석 처리 (하위 호환성)
+                self._update_xbrl_notes_archive_batch(archive_sheet, wb, last_col, 'connected')
                 
         except Exception as e:
             print(f"❌ {sheet_name} 업데이트 실패: {str(e)}")
@@ -484,7 +544,7 @@ class DartExcelDownloader:
                 time.sleep(60)
 
     def _setup_xbrl_archive_header(self, sheet, file_type):
-        """XBRL Archive 시트 헤더 설정 (완전한 레이아웃)"""
+        """XBRL Archive 시트 헤더 설정 (M열부터 데이터 시작)"""
         try:
             # 현재 날짜
             current_date = datetime.now().strftime('%Y-%m-%d')
@@ -494,116 +554,42 @@ class DartExcelDownloader:
             
             # 1행: 제목 정보
             if file_type == 'financial':
-                title_row = ['DART Archive XBRL 재무제표', '', '', '', '', '', '', '', '', f'최종업데이트: {current_date}', '', '']
+                title_row = ['DART Archive XBRL 재무제표', '', '', '', '', '', '', '', '', f'최종업데이트: {current_date}', '', '', 'M열', 'N열', 'O열', 'P열']
             else:
-                title_row = ['DART Archive XBRL 재무제표주석', '', '', '', '', '', '', '', '', f'최종업데이트: {current_date}', '', '']
+                title_row = ['DART Archive XBRL 재무제표주석', '', '', '', '', '', '', '', '', f'최종업데이트: {current_date}', '', '', 'M열', 'N열', 'O열', 'P열']
             header_data.append(title_row)
             
             # 2행: 회사 정보
-            company_row = [f'회사명: {self.company_name}', '', '', '', '', '', '', '', '', '', '', '']
+            company_row = [f'회사명: {self.company_name}', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
             header_data.append(company_row)
             
             # 3행: 종목 정보
-            stock_row = [f'종목코드: {self.corp_code}', '', '', '', '', '', '', '', '', '', '', '']
+            stock_row = [f'종목코드: {self.corp_code}', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
             header_data.append(stock_row)
             
             # 4행: 빈 행
-            header_data.append(['', '', '', '', '', '', '', '', '', '', '', ''])
+            header_data.append(['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', ''])
             
-            # 5행: 컬럼 헤더 라벨
-            column_labels = ['', '', '', '', '', '업데이트날짜', '재무보고시점', '보고서명', '접수번호', '비고', '', '']
+            # 5행: 컬럼 헤더 라벨 (분기정보가 들어갈 행)
+            column_labels = ['', '', '', '', '', '', '', '', '', '', '', '계정과목', '분기정보→', '분기정보→', '분기정보→', '분기정보→']
             header_data.append(column_labels)
             
-            # 6행: 데이터 입력 행 (첫 번째 데이터) - pandas Series 안전 처리
-            report_name = ''
-            rcept_no = ''
-            try:
-                if self.current_report is not None:
-                    if hasattr(self.current_report, 'get'):
-                        # pandas Series 또는 dict인 경우
-                        report_name = self.current_report.get('report_nm', '')
-                        rcept_no = self.current_report.get('rcept_no', '')
-                    else:
-                        # 기타 타입인 경우 문자열로 변환
-                        report_name = str(self.current_report)
-                        rcept_no = ''
-            except Exception as e:
-                print(f"    ⚠️ 보고서 정보 추출 실패: {str(e)}")
+            # 6행: 업데이트 날짜가 들어갈 행
+            date_labels = ['', '', '', '', '', '', '', '', '', '', '', '항목명↓', '업데이트날짜→', '업데이트날짜→', '업데이트날짜→', '업데이트날짜→']
+            header_data.append(date_labels)
             
-            first_data_row = ['', '', '', '', '', current_date, self._get_quarter_info(), 
-                             str(report_name), str(rcept_no), '1Q25', '', '']
-            header_data.append(first_data_row)
-            
-            # 2. 항목명 컬럼 (A7:F30) - G열부터 L열까지가 레이아웃 구조 표시 영역
+            # 7행부터: 시트별 고정 행 영역 설정
             if file_type == 'financial':
-                # 재무제표 항목들
-                items_data = [
-                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 7행: 빈 행
-                    ['자산총계', '억원', '총자산 (유동+비유동)', '', '', 'G열', 'H열', 'I열', 'J열', 'K열', 'L열', '...'],  # 8행
-                    ['유동자산', '억원', '1년내 현금화 가능', '', '', '', '', '', '', '', '', ''],  # 9행
-                    ['현금및현금성자산', '억원', '현금 및 현금성자산', '', '', '', '', '', '', '', '', ''],  # 10행
-                    ['기타유동자산', '억원', '기타 유동자산', '', '', '', '', '', '', '', '', ''],  # 11행
-                    ['재고자산', '억원', '재고자산', '', '', '', '', '', '', '', '', ''],  # 12행
-                    ['비유동자산', '억원', '1년이상 장기자산', '', '', '', '', '', '', '', '', ''],  # 13행
-                    ['유형자산', '억원', '토지, 건물, 설비', '', '', '', '', '', '', '', '', ''],  # 14행
-                    ['사용권자산', '억원', '리스 관련 자산', '', '', '', '', '', '', '', '', ''],  # 15행
-                    ['무형자산', '억원', '특허권, SW 등', '', '', '', '', '', '', '', '', ''],  # 16행
-                    ['관계기업투자', '억원', '관계기업 투자자산', '', '', '', '', '', '', '', '', ''],  # 17행
-                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 18행: 구분선
-                    ['부채총계', '억원', '총부채 (유동+비유동)', '', '', '', '', '', '', '', '', ''],  # 19행
-                    ['유동부채', '억원', '1년내 상환 부채', '', '', '', '', '', '', '', '', ''],  # 20행
-                    ['기타유동부채', '억원', '기타 유동부채', '', '', '', '', '', '', '', '', ''],  # 21행
-                    ['당기법인세부채', '억원', '당기 법인세 부채', '', '', '', '', '', '', '', '', ''],  # 22행
-                    ['비유동부채', '억원', '1년이상 장기부채', '', '', '', '', '', '', '', '', ''],  # 23행
-                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 24행: 구분선
-                    ['자본총계', '억원', '총자본 (자본금+잉여금)', '', '', '', '', '', '', '', '', ''],  # 25행
-                    ['자본금', '억원', '납입자본금', '', '', '', '', '', '', '', '', ''],  # 26행
-                    ['자본잉여금', '억원', '자본잉여금', '', '', '', '', '', '', '', '', ''],  # 27행
-                    ['이익잉여금', '억원', '누적 이익잉여금', '', '', '', '', '', '', '', '', ''],  # 28행
-                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 29행: 구분선
-                    ['매출액', '억원', '영업수익', '', '', '', '', '', '', '', '', ''],  # 30행
-                    ['영업이익', '억원', '영업활동 이익', '', '', '', '', '', '', '', '', ''],  # 31행
-                    ['당기순이익', '억원', '최종 순이익', '', '', '', '', '', '', '', '', ''],  # 32행
-                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 33행: 구분선
-                    ['영업활동현금흐름', '억원', '영업활동 현금흐름', '', '', '', '', '', '', '', '', ''],  # 34행
-                    ['투자활동현금흐름', '억원', '투자활동 현금흐름', '', '', '', '', '', '', '', '', ''],  # 35행
-                    ['재무활동현금흐름', '억원', '재무활동 현금흐름', '', '', '', '', '', '', '', '', '']   # 36행
-                ]
+                items_data = self._create_financial_archive_structure()
             else:
-                # 재무제표주석 항목들
-                items_data = [
-                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 7행: 빈 행
-                    ['회계정책', '정성정보', '회계처리 기준 및 정책', '', '', 'G열', 'H열', 'I열', 'J열', 'K열', 'L열', '...'],  # 8행
-                    ['현금및현금성자산', '상세정보', '현금 및 현금성자산 구성', '', '', '', '', '', '', '', '', ''],  # 9행
-                    ['매출채권', '상세정보', '매출채권 및 기타채권', '', '', '', '', '', '', '', '', ''],  # 10행
-                    ['재고자산', '상세정보', '재고자산 평가 및 구성', '', '', '', '', '', '', '', '', ''],  # 11행
-                    ['유형자산', '상세정보', '토지, 건물, 설비 등', '', '', '', '', '', '', '', '', ''],  # 12행
-                    ['사용권자산', '상세정보', '리스 관련 자산', '', '', '', '', '', '', '', '', ''],  # 13행
-                    ['무형자산', '상세정보', '특허권, SW, 개발비', '', '', '', '', '', '', '', '', ''],  # 14행
-                    ['관계기업투자', '상세정보', '관계기업 및 공동기업', '', '', '', '', '', '', '', '', ''],  # 15행
-                    ['기타금융자산', '상세정보', '기타 금융자산', '', '', '', '', '', '', '', '', ''],  # 16행
-                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 17행: 구분선
-                    ['매입채무', '상세정보', '매입채무 및 기타채무', '', '', '', '', '', '', '', '', ''],  # 18행
-                    ['기타유동부채', '상세정보', '기타 유동부채', '', '', '', '', '', '', '', '', ''],  # 19행
-                    ['충당부채', '상세정보', '각종 충당부채', '', '', '', '', '', '', '', '', ''],  # 20행
-                    ['확정급여부채', '상세정보', '퇴직급여 관련 부채', '', '', '', '', '', '', '', '', ''],  # 21행
-                    ['이연법인세', '상세정보', '이연법인세자산/부채', '', '', '', '', '', '', '', '', ''],  # 22행
-                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 23행: 구분선
-                    ['자본금', '상세정보', '납입자본 상세', '', '', '', '', '', '', '', '', ''],  # 24행
-                    ['자본잉여금', '상세정보', '자본잉여금 상세', '', '', '', '', '', '', '', '', ''],  # 25행
-                    ['', '', '', '', '', '', '', '', '', '', '', ''],  # 26행: 구분선
-                    ['수익인식', '정성정보', '수익 인식 정책', '', '', '', '', '', '', '', '', ''],  # 27행
-                    ['주당손익', '정량정보', '주당순이익 계산', '', '', '', '', '', '', '', '', ''],  # 28행
-                    ['법인세비용', '상세정보', '법인세 관련 정보', '', '', '', '', '', '', '', '', ''],  # 29행
-                    ['기타', '보충정보', '기타 중요 주석사항', '', '', '', '', '', '', '', '', '']   # 30행
-                ]
+                items_data = self._create_notes_archive_structure()
             
             # 전체 데이터 결합
             all_data = header_data + items_data
             
-            # 3. 한 번에 업데이트
+            # 3. 한 번에 업데이트 (P열까지)
             end_row = len(all_data)
-            range_name = f'A1:L{end_row}'
+            range_name = f'A1:P{end_row}'
             
             print(f"  📋 XBRL Archive 헤더 설정: {range_name}")
             sheet.update(range_name, all_data)
@@ -611,34 +597,91 @@ class DartExcelDownloader:
             # 4. 추가 설명
             print(f"  ✅ XBRL Archive 레이아웃 완료")
             print(f"      📁 파일타입: {'재무제표' if file_type == 'financial' else '재무제표주석'}")
-            print(f"      📊 헤더영역: A1:L6 (기본정보)")
-            print(f"      📋 항목영역: A7:F{end_row} (항목명, 단위, 설명)")
-            print(f"      📈 데이터영역: G7:L{end_row} (분기별 데이터)")
+            print(f"      📊 헤더영역: A1:P6 (기본정보)")
+            print(f"      📋 계정명영역: L열 (계정과목명)")
+            print(f"      📈 데이터영역: M열부터 시작 (분기별 데이터)")
             print(f"      🔄 J1셀: 최종업데이트 일자")
-            print(f"      📅 F열: 업데이트날짜 / G열: 재무보고시점")
             
         except Exception as e:
             print(f"  ❌ XBRL Archive 헤더 설정 실패: {str(e)}")
 
+    def _create_financial_archive_structure(self):
+        """재무제표 Archive 구조 생성 (시트별 고정 행 영역)"""
+        items_data = []
+        
+        # 연결 재무제표 영역
+        for sheet_code, info in self.financial_row_mapping['connected'].items():
+            start_row = info['start'] - 6  # 헤더 6행 제외
+            end_row = info['end'] - 6
+            sheet_name = info['name']
+            
+            for i in range(start_row, end_row + 1):
+                if i == start_row:
+                    # 첫 번째 행에 시트명 표시
+                    row_data = ['', '', '', '', '', '', '', '', '', '', '', f'[연결] {sheet_name}', '', '', '', '']
+                else:
+                    row_data = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
+                items_data.append(row_data)
+        
+        # 구분선 (251~256행)
+        for i in range(5):
+            items_data.append(['', '', '', '', '', '', '', '', '', '', '', '=== 구분선 ===', '', '', '', ''])
+        
+        # 별도 재무제표 영역
+        for sheet_code, info in self.financial_row_mapping['separate'].items():
+            start_row = info['start'] - 256  # 별도는 257행부터 시작
+            end_row = info['end'] - 256
+            sheet_name = info['name']
+            
+            for i in range(start_row, end_row + 1):
+                if i == start_row:
+                    # 첫 번째 행에 시트명 표시
+                    row_data = ['', '', '', '', '', '', '', '', '', '', '', f'[별도] {sheet_name}', '', '', '', '']
+                else:
+                    row_data = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
+                items_data.append(row_data)
+        
+        return items_data
+
+    def _create_notes_archive_structure(self):
+        """주석 Archive 구조 생성 (주석별 고정 행 영역, 7~500행 활용)"""
+        items_data = []
+        
+        for note_name, info in self.notes_row_mapping.items():
+            start_row = info['start'] - 6  # 헤더 6행 제외
+            end_row = info['end'] - 6
+            display_name = info.get('name', note_name)
+            
+            for i in range(start_row, end_row + 1):
+                if i == start_row:
+                    # 첫 번째 행에 주석명 표시
+                    row_data = ['', '', '', '', '', '', '', '', '', '', '', f'{display_name}', '', '', '', '']
+                else:
+                    row_data = ['', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']
+                items_data.append(row_data)
+        
+        print(f"  📊 주석 Archive 구조 생성: 총 {len(items_data)}행 (7~500행)")
+        return items_data
+
     def _find_last_data_column(self, sheet):
-        """마지막 데이터 열 찾기 (G열부터 시작)"""
+        """마지막 데이터 열 찾기 (M열부터 시작)"""
         try:
             # 6행(첫 번째 데이터 행)에서 마지막 데이터가 있는 열 찾기
             row_6_values = sheet.row_values(6)
             
-            # G열(7번째 열)부터 시작해서 마지막 데이터 열 찾기
-            last_col = 6  # G열 = 7번째 열 (0-based index에서는 6)
+            # M열(13번째 열)부터 시작해서 마지막 데이터 열 찾기
+            last_col = 12  # M열 = 13번째 열 (0-based index에서는 12)
             
-            for i in range(6, len(row_6_values)):  # G열부터 검색
+            for i in range(12, len(row_6_values)):  # M열부터 검색
                 if row_6_values[i]:  # 데이터가 있으면
                     last_col = i
             
             # 다음 열에 새 데이터 추가
             next_col = last_col + 1
             
-            # 최소 G열(6)부터 시작
-            if next_col < 6:
-                next_col = 6
+            # 최소 M열(12)부터 시작
+            if next_col < 12:
+                next_col = 12
             
             col_letter = self._get_column_letter(next_col)
             print(f"📍 새 데이터 추가 위치: {col_letter}열 (인덱스: {next_col})")
@@ -647,7 +690,7 @@ class DartExcelDownloader:
             
         except Exception as e:
             print(f"⚠️ 마지막 열 찾기 실패: {str(e)}")
-            return 6  # 기본값: G열
+            return 12  # 기본값: M열
 
     def _extract_balance_sheet_data(self, wb):
         """재무상태표 데이터 추출 (Series 오류 완전 해결)"""
@@ -939,7 +982,7 @@ class DartExcelDownloader:
             # 시트 수에 따른 기본 분석
             sheet_count = len(wb.sheetnames)
             
-            # 주석 항목들에 대한 기본 상태 설정
+            # 주석 항목들에 대한 기본 상태 설정 (확장된 항목)
             base_analysis = {
                 '회계정책': '✓',
                 '현금및현금성자산': '상세데이터',
@@ -959,8 +1002,7 @@ class DartExcelDownloader:
                 '자본잉여금': '상세데이터',
                 '수익인식': '정성정보',
                 '주당손익': '정량정보',
-                '법인세비용': '상세데이터',
-                '기타': '보충정보'
+                '법인세비용': '상세데이터'
             }
             
             if sheet_count > 10:
@@ -974,7 +1016,8 @@ class DartExcelDownloader:
                     '유형자산': '기본데이터',
                     '무형자산': '기본데이터',
                     '수익인식': '정성정보',
-                    '기타': '보충정보'
+                    '주당손익': '정량정보',
+                    '법인세비용': '기본데이터'
                 }
                 analysis.update(limited_analysis)
                 print(f"    📊 {len(analysis)}개 주석 항목 제한 설정 완료")
@@ -991,29 +1034,17 @@ class DartExcelDownloader:
                 '회계정책': '✓',
                 '현금및현금성자산': '데이터있음',
                 '수익인식': '정성정보',
-                '기타': '보충정보'
+                '주당손익': '정량정보',
+                '법인세비용': '데이터있음'
             }
         
         return analysis
 
     def _update_xbrl_financial_archive_batch(self, sheet, wb, col_index):
-        """XBRL 재무제표 Archive 업데이트 (완전 수정)"""
+        """XBRL 재무제표 Archive 업데이트 (시트별 고정 행 영역 적용)"""
         try:
             # 데이터 추출
             print(f"  📊 XBRL 재무제표 데이터 추출 중...")
-            
-            # 각 시트별 데이터 추출
-            balance_data = self._extract_balance_sheet_data(wb)
-            income_data = self._extract_income_statement_data(wb)
-            cashflow_data = self._extract_cashflow_statement_data(wb)
-            
-            # 모든 데이터 통합
-            all_financial_data = {}
-            all_financial_data.update(balance_data)
-            all_financial_data.update(income_data)
-            all_financial_data.update(cashflow_data)
-            
-            print(f"  📈 총 {len(all_financial_data)}개 재무 항목 추출됨")
             
             # 업데이트할 컬럼 위치
             col_letter = self._get_column_letter(col_index)
@@ -1022,75 +1053,37 @@ class DartExcelDownloader:
             # 배치 업데이트 데이터 준비
             update_data = []
             
-            # 헤더 정보 업데이트
+            # 헤더 정보 업데이트 (5행: 분기정보, 6행: 업데이트날짜)
             report_date = datetime.now().strftime('%Y-%m-%d')
             quarter_info = self._get_quarter_info()
             
-            # 헤더 업데이트 (6행) - pandas Series 안전 처리
-            report_name = ''
-            rcept_no = ''
-            try:
-                if self.current_report is not None:
-                    if hasattr(self.current_report, 'get'):
-                        # pandas Series 또는 dict인 경우
-                        report_name = self.current_report.get('report_nm', '')
-                        rcept_no = self.current_report.get('rcept_no', '')
-                    else:
-                        # 기타 타입인 경우 문자열로 변환
-                        report_name = str(self.current_report)
-                        rcept_no = ''
-            except Exception as e:
-                print(f"    ⚠️ 보고서 정보 추출 실패: {str(e)}")
-            
+            # 헤더 업데이트 (5행, 6행)
             update_data.extend([
-                {'range': f'F6', 'values': [[report_date]]},
-                {'range': f'G6', 'values': [[quarter_info]]},
-                {'range': f'H6', 'values': [[str(report_name)]]},
-                {'range': f'I6', 'values': [[str(rcept_no)]]},
-                {'range': f'J1', 'values': [[f'최종업데이트: {report_date}']]}
+                {'range': f'{col_letter}5', 'values': [[quarter_info]]},  # 분기정보
+                {'range': f'{col_letter}6', 'values': [[report_date]]},   # 업데이트날짜
+                {'range': f'J1', 'values': [[f'최종업데이트: {report_date}']]}  # J1셀 최종업데이트
             ])
             
-            # 재무 데이터 매핑
-            financial_mapping = {
-                '자산총계': 8, '유동자산': 9, '현금및현금성자산': 10, '기타유동자산': 11, '재고자산': 12,
-                '비유동자산': 13, '유형자산': 14, '사용권자산': 15, '무형자산': 16, '관계기업투자': 17,
-                '부채총계': 19, '유동부채': 20, '기타유동부채': 21, '당기법인세부채': 22, '비유동부채': 23,
-                '자본총계': 25, '자본금': 26, '자본잉여금': 27, '이익잉여금': 28,
-                '매출액': 30, '영업이익': 31, '당기순이익': 32,
-                '영업활동현금흐름': 34, '투자활동현금흐름': 35, '재무활동현금흐름': 36
-            }
+            # L열에 계정명이 없으면 추출해서 업데이트
+            self._extract_and_update_account_names_by_sheet(sheet, wb, update_data)
             
-            # 각 항목별 데이터 업데이트
-            updated_count = 0
-            for item, row_num in financial_mapping.items():
-                if item in all_financial_data and all_financial_data[item] is not None:
-                    value = self._format_number_for_archive(all_financial_data[item])
-                    update_data.append({
-                        'range': f'{col_letter}{row_num}',
-                        'values': [[value]]
-                    })
-                    print(f"    📈 {item}: {value}억원")
-                    updated_count += 1
-                else:
-                    # 빈 값으로 설정
-                    update_data.append({
-                        'range': f'{col_letter}{row_num}',
-                        'values': [['']]
-                    })
+            # 실제 재무 데이터 업데이트 (시트별 고정 행 영역 적용)
+            data_updates = self._update_financial_data_by_type(wb, col_letter, {})
+            update_data.extend(data_updates)
             
-            print(f"  📊 총 {updated_count}개 항목에 데이터 입력됨")
+            print(f"  📊 총 업데이트할 셀: {len(update_data)}개")
             
             # 배치 업데이트 실행
             if update_data:
                 print(f"  📤 Archive 업데이트 중... ({len(update_data)}개 셀)")
                 try:
                     # 작은 청크로 나누어 안전하게 업데이트
-                    chunk_size = 10
+                    chunk_size = 15
                     for i in range(0, len(update_data), chunk_size):
                         chunk = update_data[i:i + chunk_size]
                         sheet.batch_update(chunk)
                         if i + chunk_size < len(update_data):
-                            time.sleep(1)  # 청크 간 대기 시간 단축
+                            time.sleep(1)
                     
                     print(f"  ✅ XBRL 재무제표 Archive 업데이트 완료")
                     
@@ -1104,11 +1097,378 @@ class DartExcelDownloader:
             import traceback
             print(f"📋 상세 오류: {traceback.format_exc()}")
 
-    def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index):
-        """XBRL 재무제표주석 Archive 업데이트 (완전 수정)"""
+    def _extract_and_update_account_names_by_sheet(self, sheet, wb, update_data):
+        """시트별 고정 행 영역에 계정명 추출 및 업데이트"""
+        try:
+            print(f"  📋 시트별 계정명 추출 및 업데이트 중...")
+            
+            # 현재 L열에 데이터가 있는지 확인
+            try:
+                l_column_values = sheet.col_values(12)  # L열 = 12번째 열
+                has_account_names = any(val and val != '' and '계정과목' not in val and '항목명' not in val 
+                                      for val in l_column_values[6:])  # 7행부터 확인
+            except:
+                has_account_names = False
+            
+            if has_account_names:
+                print(f"    ✅ L열에 이미 계정명이 있습니다. 건너뜁니다.")
+                return
+            
+            # 연결 재무제표 시트별 계정명 추출
+            for sheet_code, info in self.financial_row_mapping['connected'].items():
+                if sheet_code in wb.sheetnames:
+                    ws = wb[sheet_code]
+                    start_row = info['start']
+                    end_row = info['end']
+                    sheet_name = info['name']
+                    
+                    print(f"    📄 {sheet_code} ({sheet_name}) 계정명 추출: {start_row}~{end_row}행")
+                    
+                    # 계정명 추출
+                    extracted_names = []
+                    for row in ws.iter_rows(values_only=True, max_row=200):
+                        if row and row[0] and isinstance(row[0], str):
+                            account_name = str(row[0]).strip()
+                            if len(account_name) > 1 and not account_name.startswith('주석'):
+                                extracted_names.append(account_name)
+                    
+                    # L열에 업데이트할 데이터 추가 (할당된 행 영역 내에서)
+                    current_row = start_row
+                    for name in extracted_names[:end_row-start_row+1]:  # 할당된 행 수만큼
+                        if current_row <= end_row:
+                            update_data.append({
+                                'range': f'L{current_row}',
+                                'values': [[name]]
+                            })
+                            current_row += 1
+                    
+                    print(f"      ✅ {min(len(extracted_names), end_row-start_row+1)}개 계정명 할당")
+            
+            # 별도 재무제표 시트별 계정명 추출
+            for sheet_code, info in self.financial_row_mapping['separate'].items():
+                if sheet_code in wb.sheetnames:
+                    ws = wb[sheet_code]
+                    start_row = info['start']
+                    end_row = info['end']
+                    sheet_name = info['name']
+                    
+                    print(f"    📄 {sheet_code} ({sheet_name}) 계정명 추출: {start_row}~{end_row}행")
+                    
+                    # 계정명 추출
+                    extracted_names = []
+                    for row in ws.iter_rows(values_only=True, max_row=200):
+                        if row and row[0] and isinstance(row[0], str):
+                            account_name = str(row[0]).strip()
+                            if len(account_name) > 1 and not account_name.startswith('주석'):
+                                extracted_names.append(account_name)
+                    
+                    # L열에 업데이트할 데이터 추가 (할당된 행 영역 내에서)
+                    current_row = start_row
+                    for name in extracted_names[:end_row-start_row+1]:  # 할당된 행 수만큼
+                        if current_row <= end_row:
+                            update_data.append({
+                                'range': f'L{current_row}',
+                                'values': [[name]]
+                            })
+                            current_row += 1
+                    
+                    print(f"      ✅ {min(len(extracted_names), end_row-start_row+1)}개 계정명 할당")
+            
+            print(f"  ✅ 시트별 계정명 추출 완료")
+            
+        except Exception as e:
+            print(f"  ⚠️ 시트별 계정명 추출 실패: {str(e)}")
+
+    def _update_financial_data_by_type(self, wb, col_letter, all_financial_data):
+        """재무 데이터를 L열 계정명에 맞게 정확히 매칭하여 업데이트 (개선된 버전)"""
+        update_list = []
+        
+        try:
+            print(f"  📊 L열 계정명 기반 데이터 매칭 중...")
+            
+            # 현재 시트의 L열에서 계정명 목록 가져오기
+            try:
+                # 우선 현재 Archive 시트의 L열 값들을 가져옴
+                archive_sheet = self.workbook.worksheet('Dart_Archive_XBRL_재무제표')
+                l_column_values = archive_sheet.col_values(12)  # L열 = 12번째 열
+                
+                print(f"    📋 L열에서 {len(l_column_values)}개 행 확인")
+                
+                # 7행부터 500행까지 계정명 확인
+                account_mapping = {}
+                for row_idx in range(6, min(len(l_column_values), 500)):  # 7행부터 (index 6)
+                    account_name = l_column_values[row_idx] if row_idx < len(l_column_values) else ''
+                    if account_name and account_name.strip() and account_name not in ['계정과목', '항목명', '', '=== 구분선 ===']:
+                        real_row_num = row_idx + 1  # 실제 행 번호
+                        account_mapping[account_name.strip()] = real_row_num
+                
+                print(f"    ✅ 유효한 계정명 {len(account_mapping)}개 발견")
+                
+                if len(account_mapping) > 0:
+                    # L열에 계정명이 있는 경우 - 정확한 매칭으로 데이터 입력
+                    matched_data = self._match_accounts_with_excel_data(wb, account_mapping)
+                    
+                    for account_name, (row_num, value) in matched_data.items():
+                        if value is not None:
+                            formatted_value = self._format_number_for_archive(value)
+                            update_list.append({
+                                'range': f'{col_letter}{row_num}',
+                                'values': [[formatted_value]]
+                            })
+                            print(f"    📈 {account_name}: {formatted_value}억원 (L{row_num})")
+                        else:
+                            # 값이 없는 경우 빈 값
+                            update_list.append({
+                                'range': f'{col_letter}{row_num}',
+                                'values': [['']]
+                            })
+                else:
+                    # L열에 계정명이 없는 경우 - 기존 방식대로 연결/별도 구분
+                    print(f"    📋 L열에 계정명이 없습니다. 기존 방식으로 처리합니다.")
+                    update_list = self._update_data_without_account_mapping(wb, col_letter, all_financial_data)
+                    
+            except Exception as e:
+                print(f"    ⚠️ L열 읽기 실패: {str(e)}")
+                # fallback으로 기존 방식 사용
+                update_list = self._update_data_without_account_mapping(wb, col_letter, all_financial_data)
+        
+        except Exception as e:
+            print(f"  ❌ 재무 데이터 매핑 실패: {str(e)}")
+        
+        return update_list
+
+    def _match_accounts_with_excel_data(self, wb, account_mapping):
+        """L열의 계정명과 Excel 시트의 계정명을 정확히 매칭하여 데이터 추출"""
+        matched_data = {}
+        
+        try:
+            print(f"    🔍 Excel 시트와 계정명 매칭 중...")
+            
+            # 모든 재무제표 시트에서 데이터 추출
+            financial_sheets = ['D210000', 'D210005', 'D431410', 'D431415', 'D520000', 'D520005', 'D610000', 'D610005']
+            
+            # 각 시트별로 계정명-값 매핑 생성
+            excel_data_by_sheet = {}
+            for sheet_name in financial_sheets:
+                if sheet_name in wb.sheetnames:
+                    excel_data_by_sheet[sheet_name] = self._extract_account_value_mapping(wb[sheet_name])
+                    print(f"      📄 {sheet_name}: {len(excel_data_by_sheet[sheet_name])}개 계정 발견")
+            
+            # L열의 각 계정명에 대해 Excel에서 매칭되는 값 찾기
+            for l_account_name, row_num in account_mapping.items():
+                best_match_value = None
+                best_match_confidence = 0
+                
+                # 모든 시트에서 가장 잘 매칭되는 계정 찾기
+                for sheet_name, sheet_data in excel_data_by_sheet.items():
+                    for excel_account_name, excel_value in sheet_data.items():
+                        confidence = self._calculate_account_matching_confidence(l_account_name, excel_account_name)
+                        
+                        if confidence > best_match_confidence and confidence > 0.7:  # 70% 이상 매칭
+                            best_match_value = excel_value
+                            best_match_confidence = confidence
+                            if confidence > 0.95:  # 95% 이상이면 완벽한 매칭으로 간주하고 중단
+                                break
+                
+                matched_data[l_account_name] = (row_num, best_match_value)
+                
+                if best_match_value is not None:
+                    confidence_pct = int(best_match_confidence * 100)
+                    print(f"      ✅ '{l_account_name}' 매칭 성공 ({confidence_pct}% 신뢰도)")
+                else:
+                    print(f"      ⚠️ '{l_account_name}' 매칭 실패")
+        
+        except Exception as e:
+            print(f"    ❌ 계정명 매칭 실패: {str(e)}")
+        
+        return matched_data
+
+    def _extract_account_value_mapping(self, worksheet):
+        """워크시트에서 계정명-값 매핑 추출"""
+        account_data = {}
+        
+        try:
+            for row in worksheet.iter_rows(values_only=True, max_row=300):
+                if row and len(row) > 0 and row[0]:
+                    account_name = str(row[0]).strip()
+                    
+                    if len(account_name) > 1:
+                        # 값 추출 (우선순위: 3열 > 2열 > 4열)
+                        value = None
+                        for col_idx in [2, 1, 3, 4]:
+                            if len(row) > col_idx and row[col_idx]:
+                                try:
+                                    if isinstance(row[col_idx], (int, float)):
+                                        value = row[col_idx]
+                                        break
+                                    elif isinstance(row[col_idx], str):
+                                        clean_val = str(row[col_idx]).replace(',', '').replace('(', '-').replace(')', '').strip()
+                                        if clean_val and clean_val != '-' and clean_val.replace('.', '').replace('-', '').isdigit():
+                                            value = float(clean_val)
+                                            break
+                                except:
+                                    continue
+                        
+                        if value is not None and abs(value) > 1000:  # 의미있는 값만
+                            account_data[account_name] = value
+        
+        except Exception as e:
+            print(f"      ⚠️ 워크시트 데이터 추출 실패: {str(e)}")
+        
+        return account_data
+
+    def _calculate_account_matching_confidence(self, archive_account, excel_account):
+        """두 계정명의 매칭 신뢰도 계산 (0.0 ~ 1.0)"""
+        try:
+            # 정확히 같은 경우
+            if archive_account == excel_account:
+                return 1.0
+            
+            # 대소문자 무시하고 같은 경우
+            if archive_account.lower() == excel_account.lower():
+                return 0.98
+            
+            # 공백 제거 후 같은 경우
+            if archive_account.replace(' ', '') == excel_account.replace(' ', ''):
+                return 0.95
+            
+            # 포함 관계 확인
+            archive_clean = archive_account.replace(' ', '').lower()
+            excel_clean = excel_account.replace(' ', '').lower()
+            
+            if archive_clean in excel_clean or excel_clean in archive_clean:
+                # 포함된 길이 비율에 따라 신뢰도 계산
+                min_len = min(len(archive_clean), len(excel_clean))
+                max_len = max(len(archive_clean), len(excel_clean))
+                return 0.7 + (min_len / max_len) * 0.2
+            
+            # 키워드 매칭 (주요 키워드가 포함되어 있는지)
+            keywords_match = 0
+            total_keywords = 0
+            
+            # 아카이브 계정명을 키워드로 분해
+            archive_keywords = [word for word in archive_account.replace('(', '').replace(')', '').split() if len(word) > 1]
+            
+            for keyword in archive_keywords:
+                total_keywords += 1
+                if keyword.lower() in excel_account.lower():
+                    keywords_match += 1
+            
+            if total_keywords > 0:
+                keyword_ratio = keywords_match / total_keywords
+                if keyword_ratio >= 0.7:  # 70% 이상의 키워드가 매칭
+                    return 0.6 + keyword_ratio * 0.3
+            
+            return 0.0
+            
+        except Exception as e:
+            print(f"      ⚠️ 매칭 신뢰도 계산 실패: {str(e)}")
+            return 0.0
+
+    def _update_data_without_account_mapping(self, wb, col_letter, all_financial_data):
+        """기존 방식으로 연결/별도 구분하여 데이터 업데이트 (fallback)"""
+        update_list = []
+        
+        try:
+            print(f"    📊 기존 방식으로 연결/별도 데이터 매핑 중...")
+            
+            # 연결 재무제표 데이터 (7행부터)
+            connected_data = self._extract_data_from_connected_sheets(wb)
+            
+            # 별도 재무제표 데이터 (257행부터) 
+            separate_data = self._extract_data_from_separate_sheets(wb)
+            
+            # 연결 데이터 업데이트 (7행부터)
+            for i, (account, value) in enumerate(connected_data.items()):
+                if i < 240:  # 7~246행까지
+                    row_num = 7 + i
+                    formatted_value = self._format_number_for_archive(value) if value else ''
+                    update_list.append({
+                        'range': f'{col_letter}{row_num}',
+                        'values': [[formatted_value]]
+                    })
+                    if formatted_value:
+                        print(f"    📈 [연결] {account}: {formatted_value}억원 (L{row_num})")
+            
+            # 별도 데이터 업데이트 (257행부터)
+            for i, (account, value) in enumerate(separate_data.items()):
+                if i < 240:  # 257~496행까지
+                    row_num = 257 + i
+                    formatted_value = self._format_number_for_archive(value) if value else ''
+                    update_list.append({
+                        'range': f'{col_letter}{row_num}',
+                        'values': [[formatted_value]]
+                    })
+                    if formatted_value:
+                        print(f"    📈 [별도] {account}: {formatted_value}억원 (L{row_num})")
+        
+        except Exception as e:
+            print(f"  ⚠️ 기존 방식 데이터 매핑 실패: {str(e)}")
+        
+        return update_list
+
+    def _extract_data_from_connected_sheets(self, wb):
+        """연결 재무제표에서 데이터 추출 (D210000, D431410, D520000, D610000)"""
+        connected_data = {}
+        
+        connected_sheets = ['D210000', 'D431410', 'D520000', 'D610000']
+        for sheet_name in connected_sheets:
+            if sheet_name in wb.sheetnames:
+                sheet_data = self._extract_sheet_data(wb[sheet_name])
+                connected_data.update(sheet_data)
+        
+        return connected_data
+
+    def _extract_data_from_separate_sheets(self, wb):
+        """별도 재무제표에서 데이터 추출 (D210005, D431415, D520005, D610005)"""
+        separate_data = {}
+        
+        separate_sheets = ['D210005', 'D431415', 'D520005', 'D610005']
+        for sheet_name in separate_sheets:
+            if sheet_name in wb.sheetnames:
+                sheet_data = self._extract_sheet_data(wb[sheet_name])
+                separate_data.update(sheet_data)
+        
+        return separate_data
+
+    def _extract_sheet_data(self, worksheet):
+        """개별 워크시트에서 계정명과 값 추출"""
+        data = {}
+        
+        try:
+            for row in worksheet.iter_rows(values_only=True, max_row=200):
+                if row and row[0] and isinstance(row[0], str):
+                    account_name = str(row[0]).strip()
+                    
+                    # 값 추출 (2열 또는 3열에서)
+                    value = None
+                    for col_idx in [2, 1, 3]:
+                        if len(row) > col_idx and row[col_idx]:
+                            try:
+                                if isinstance(row[col_idx], (int, float)):
+                                    value = row[col_idx]
+                                    break
+                                elif isinstance(row[col_idx], str):
+                                    clean_val = str(row[col_idx]).replace(',', '').strip()
+                                    if clean_val and clean_val != '-':
+                                        value = float(clean_val)
+                                        break
+                            except:
+                                continue
+                    
+                    if account_name and value is not None:
+                        data[account_name] = value
+        
+        except Exception as e:
+            print(f"    ⚠️ 시트 데이터 추출 실패: {str(e)}")
+        
+        return data
+
+    def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index, notes_type='connected'):
+        """XBRL 재무제표주석 Archive 업데이트 (주석별 고정 행 영역 적용)"""
         try:
             # 주석 데이터 분석
-            print(f"  📝 XBRL 주석 데이터 분석 중...")
+            print(f"  📝 XBRL 주석 데이터 분석 중... ({notes_type})")
             notes_analysis = self._analyze_xbrl_notes_sheets(wb)
             
             # 업데이트 위치
@@ -1139,36 +1499,29 @@ class DartExcelDownloader:
                 print(f"    ⚠️ 보고서 정보 추출 실패: {str(e)}")
             
             update_data.extend([
-                {'range': f'F6', 'values': [[report_date]]},
-                {'range': f'G6', 'values': [[quarter_info]]},
-                {'range': f'H6', 'values': [[str(report_name)]]},
-                {'range': f'I6', 'values': [[str(rcept_no)]]},
+                {'range': f'{col_letter}5', 'values': [[quarter_info]]},
+                {'range': f'{col_letter}6', 'values': [[report_date]]},
                 {'range': f'J1', 'values': [[f'최종업데이트: {report_date}']]}
             ])
             
-            # 주석 항목 매핑
-            notes_mapping = {
-                '회계정책': 8, '현금및현금성자산': 9, '매출채권': 10, '재고자산': 11,
-                '유형자산': 12, '사용권자산': 13, '무형자산': 14, '관계기업투자': 15, '기타금융자산': 16,
-                '매입채무': 18, '기타유동부채': 19, '충당부채': 20, '확정급여부채': 21, '이연법인세': 22,
-                '자본금': 24, '자본잉여금': 25,
-                '수익인식': 27, '주당손익': 28, '법인세비용': 29, '기타': 30
-            }
-            
-            # 각 주석 항목 업데이트
+            # 주석별 고정 행 영역에 데이터 업데이트
             updated_count = 0
-            for item, row_num in notes_mapping.items():
-                if item in notes_analysis:
-                    status = notes_analysis[item]
+            for note_name, info in self.notes_row_mapping.items():
+                start_row = info['start']
+                end_row = info['end']
+                
+                if note_name in notes_analysis:
+                    status = notes_analysis[note_name]
+                    # 시작 행에만 상태 정보 입력
                     update_data.append({
-                        'range': f'{col_letter}{row_num}',
+                        'range': f'{col_letter}{start_row}',
                         'values': [[status]]
                     })
-                    print(f"    📄 {item}: {status}")
+                    print(f"    📄 {note_name} ({start_row}행): {status}")
                     updated_count += 1
                 else:
                     update_data.append({
-                        'range': f'{col_letter}{row_num}',
+                        'range': f'{col_letter}{start_row}',
                         'values': [['N/A']]
                     })
             
