@@ -271,21 +271,154 @@ class DartExcelDownloader:
             self.results['failed_downloads'].append(f"Excel_{rcept_no}")
 
     def _upload_excel_to_sheets(self, file_path, file_type, rcept_no):
-        """Excel 파일을 Google Sheets에 업로드"""
+        """Excel 파일을 Google Sheets에 업로드 (배치 처리)"""
         try:
             # Excel 파일 읽기
             wb = load_workbook(file_path, data_only=True)
             print(f"📊 Excel 파일 열기 완료. 시트 목록: {wb.sheetnames}")
             
-            # 각 시트를 Google Sheets에 업로드 (진행률 표시)
-            with tqdm(total=len(wb.sheetnames), desc=f"{file_type} 시트 업로드", unit="시트", leave=False) as pbar:
+            # 모든 시트 데이터를 메모리에 수집
+            all_sheets_data = {}
+            
+            # 데이터 수집 단계
+            print(f"📥 {file_type} 데이터 수집 중...")
+            with tqdm(total=len(wb.sheetnames), desc="데이터 수집", unit="시트", leave=False) as pbar:
                 for sheet_name in wb.sheetnames:
-                    self._upload_sheet_to_google(wb[sheet_name], sheet_name, file_type, rcept_no)
+                    # 데이터 추출
+                    data = []
+                    worksheet = wb[sheet_name]
+                    for row in worksheet.iter_rows(values_only=True):
+                        row_data = [str(cell) if cell is not None else '' for cell in row]
+                        if any(row_data):  # 빈 행 제외
+                            data.append(row_data)
+                    
+                    if data:
+                        # Google Sheets 시트 이름 생성
+                        gsheet_name = f"{file_type}_{sheet_name.replace(' ', '_')}"
+                        if len(gsheet_name) > 100:
+                            gsheet_name = gsheet_name[:97] + "..."
+                        
+                        all_sheets_data[gsheet_name] = {
+                            'original_name': sheet_name,
+                            'data': data
+                        }
+                    
                     pbar.update(1)
+            
+            # 배치로 업로드
+            print(f"📤 Google Sheets에 업로드 중... (총 {len(all_sheets_data)}개 시트)")
+            self._batch_upload_to_google_sheets(all_sheets_data, rcept_no)
                 
         except Exception as e:
-            print(f"❌ Excel 업로드 실패: {str(e)}")
+            print(f"❌ Excel 처리 실패: {str(e)}")
             self.results['failed_uploads'].append(file_path)
+
+    def _batch_upload_to_google_sheets(self, all_sheets_data, rcept_no):
+        """여러 시트를 배치로 Google Sheets에 업로드"""
+        try:
+            # 기존 시트 목록 가져오기
+            existing_sheets = [ws.title for ws in self.workbook.worksheets()]
+            
+            # 새로 생성할 시트와 업데이트할 시트 구분
+            sheets_to_create = []
+            sheets_to_update = []
+            
+            for gsheet_name in all_sheets_data:
+                if gsheet_name in existing_sheets:
+                    sheets_to_update.append(gsheet_name)
+                else:
+                    sheets_to_create.append(gsheet_name)
+            
+            # 1. 새 시트 생성 (배치 요청)
+            if sheets_to_create:
+                print(f"🆕 새 시트 {len(sheets_to_create)}개 생성 중...")
+                
+                # 시트를 5개씩 묶어서 생성 (API 제한 회피)
+                batch_size = 5
+                for i in range(0, len(sheets_to_create), batch_size):
+                    batch = sheets_to_create[i:i + batch_size]
+                    
+                    for sheet_name in batch:
+                        try:
+                            data = all_sheets_data[sheet_name]['data']
+                            rows = max(1000, len(data) + 100)
+                            cols = max(26, len(data[0]) + 5) if data else 26
+                            self.workbook.add_worksheet(sheet_name, rows, cols)
+                        except Exception as e:
+                            print(f"⚠️ 시트 생성 실패 {sheet_name}: {str(e)}")
+                    
+                    time.sleep(3)  # API 제한 회피를 위한 대기
+            
+            # 2. 기존 시트 클리어
+            if sheets_to_update:
+                print(f"🧹 기존 시트 {len(sheets_to_update)}개 초기화 중...")
+                for sheet_name in sheets_to_update:
+                    try:
+                        worksheet = self.workbook.worksheet(sheet_name)
+                        worksheet.clear()
+                        time.sleep(1)
+                    except Exception as e:
+                        print(f"⚠️ 시트 초기화 실패 {sheet_name}: {str(e)}")
+            
+            # 3. 데이터 업로드 (배치 처리)
+            print(f"📝 데이터 업로드 중...")
+            
+            # API 제한을 고려한 업로드
+            upload_count = 0
+            total_sheets = len(all_sheets_data)
+            
+            with tqdm(total=total_sheets, desc="시트 업로드", unit="시트") as pbar:
+                for gsheet_name, sheet_info in all_sheets_data.items():
+                    try:
+                        worksheet = self.workbook.worksheet(gsheet_name)
+                        
+                        # 헤더 추가
+                        header = [
+                            [f"업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"],
+                            [f"보고서: {rcept_no}"],
+                            [f"원본 시트: {sheet_info['original_name']}"],
+                            []
+                        ]
+                        
+                        # 전체 데이터
+                        all_data = header + sheet_info['data']
+                        
+                        # 한 번에 업로드 (batch_update 사용)
+                        if len(all_data) > 0:
+                            # update 메서드는 범위를 지정해야 하므로 전체 범위 계산
+                            end_row = len(all_data)
+                            end_col = max(len(row) for row in all_data) if all_data else 1
+                            end_col_letter = self._get_column_letter(end_col - 1)
+                            
+                            # 범위 지정하여 업데이트
+                            range_name = f'A1:{end_col_letter}{end_row}'
+                            worksheet.update(range_name, all_data)
+                        
+                        self.results['uploaded_sheets'].append(gsheet_name)
+                        upload_count += 1
+                        
+                        # API 제한 회피 (분당 60회 제한 고려)
+                        if upload_count % 10 == 0:
+                            print(f"  💤 API 제한 회피를 위해 10초 대기 중...")
+                            time.sleep(10)
+                        else:
+                            time.sleep(2)  # 각 업로드 사이 2초 대기
+                        
+                    except Exception as e:
+                        print(f"❌ 시트 업로드 실패 '{gsheet_name}': {str(e)}")
+                        self.results['failed_uploads'].append(gsheet_name)
+                        
+                        # 429 에러인 경우 더 긴 대기
+                        if "429" in str(e):
+                            print(f"  ⏳ API 할당량 초과. 30초 대기 중...")
+                            time.sleep(30)
+                    
+                    pbar.update(1)
+            
+            print(f"✅ 업로드 완료: 성공 {upload_count}/{total_sheets}개")
+                
+        except Exception as e:
+            print(f"❌ 배치 업로드 실패: {str(e)}")
 
     def _upload_sheet_to_google(self, worksheet, sheet_name, file_type, rcept_no):
         """개별 시트를 Google Sheets에 업로드"""
@@ -384,16 +517,24 @@ class DartExcelDownloader:
             print(f"❌ XBRL Archive 업데이트 실패: {str(e)}")
 
     def _update_single_archive(self, sheet_name, file_path, file_type):
-        """개별 Archive 시트 업데이트"""
+        """개별 Archive 시트 업데이트 (배치 처리)"""
         try:
             # Archive 시트 가져오기 또는 생성
+            archive_exists = False
             try:
                 archive_sheet = self.workbook.worksheet(sheet_name)
+                archive_exists = True
                 print(f"📄 기존 {sheet_name} 시트 발견")
             except gspread.exceptions.WorksheetNotFound:
                 print(f"🆕 새로운 {sheet_name} 시트 생성")
+                time.sleep(2)  # API 제한 회피
                 archive_sheet = self.workbook.add_worksheet(sheet_name, 1000, 100)
-                self._setup_archive_header(archive_sheet, file_type)
+                time.sleep(2)
+            
+            # 시트가 새로 생성된 경우 헤더 설정
+            if not archive_exists:
+                self._setup_archive_header_batch(archive_sheet, file_type)
+                time.sleep(3)  # API 제한 회피
             
             # 현재 마지막 열 찾기
             all_values = archive_sheet.get_all_values()
@@ -415,36 +556,44 @@ class DartExcelDownloader:
                 if last_col < 12:
                     last_col = 12
             
-            print(f"📍 데이터 추가 위치: {self._get_column_letter(last_col + 1)}열")
+            col_letter = self._get_column_letter(last_col)
+            print(f"📍 데이터 추가 위치: {col_letter}열")
             
             # Excel 파일 읽기
             wb = load_workbook(file_path, data_only=True)
             
             # 데이터 추출 및 업데이트
             if file_type == 'financial':
-                self._update_financial_archive(archive_sheet, wb, last_col)
+                self._update_financial_archive_batch(archive_sheet, wb, last_col)
             else:
-                self._update_notes_archive(archive_sheet, wb, last_col)
+                self._update_notes_archive_batch(archive_sheet, wb, last_col)
                 
         except Exception as e:
             print(f"❌ {sheet_name} 업데이트 실패: {str(e)}")
+            
+            # 429 에러인 경우 더 긴 대기
+            if "429" in str(e):
+                print(f"  ⏳ API 할당량 초과. 60초 대기 중...")
+                time.sleep(60)
 
-    def _setup_archive_header(self, sheet, file_type):
-        """Archive 시트 헤더 설정"""
-        # 공통 헤더
-        headers = [
-            ['DART Archive - ' + ('재무제표' if file_type == 'financial' else '재무제표주석')],
-            ['업데이트 시간:', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
-            ['회사명:', self.company_name],
-            ['종목코드:', self.corp_code],
-            [''],  # 빈 행
-            ['']   # 빈 행 (6행까지 헤더)
-        ]
+    def _setup_archive_header_batch(self, sheet, file_type):
+        """Archive 시트 헤더 설정 (배치 처리)"""
+        # 헤더 데이터 준비
+        header_data = []
         
-        # A열에 기본 정보 설정
+        # 1-6행: 헤더 정보
+        header_data.append(['DART Archive - ' + ('재무제표' if file_type == 'financial' else '재무제표주석')])
+        header_data.append(['업데이트 시간:', datetime.now().strftime('%Y-%m-%d %H:%M:%S')])
+        header_data.append(['회사명:', self.company_name])
+        header_data.append(['종목코드:', self.corp_code])
+        header_data.append([''])  # 빈 행
+        header_data.append([''])  # 빈 행
+        
+        # 7행: 항목명
+        header_data.append(['항목명'])
+        
+        # 8행부터: 항목들
         if file_type == 'financial':
-            # 재무제표 항목
-            headers.append(['항목명'])  # 7행
             items = [
                 '자산총계', '유동자산', '비유동자산',
                 '부채총계', '유동부채', '비유동부채',
@@ -453,8 +602,6 @@ class DartExcelDownloader:
                 '영업활동현금흐름', '투자활동현금흐름', '재무활동현금흐름'
             ]
         else:
-            # 주석 항목
-            headers.append(['주석항목'])  # 7행
             items = [
                 '회계정책', '현금및현금성자산', '매출채권',
                 '재고자산', '유형자산', '무형자산',
@@ -463,46 +610,55 @@ class DartExcelDownloader:
                 '이연법인세', '자본금', '기타'
             ]
         
-        # 헤더 업데이트
-        for i, header_row in enumerate(headers):
-            sheet.update(f'A{i+1}:B{i+1}', [header_row[:2]])
+        for item in items:
+            header_data.append([item])
         
-        # 항목명 업데이트
-        for i, item in enumerate(items):
-            sheet.update(f'A{i+8}', [[item]])
-
-    def _update_financial_archive(self, sheet, wb, col_index):
-        """재무제표 Archive 업데이트"""
+        # 한 번에 업데이트
         try:
-            # 주요 시트 찾기 (연결재무상태표, 연결포괄손익계산서 등)
+            end_row = len(header_data)
+            sheet.update(f'A1:B{end_row}', header_data)
+        except Exception as e:
+            print(f"⚠️ 헤더 설정 중 오류: {str(e)}")
+
+    def _update_financial_archive_batch(self, sheet, wb, col_index):
+        """재무제표 Archive 업데이트 (배치 처리)"""
+        try:
+            # 주요 시트 찾기
             target_sheets = ['연결재무상태표', '연결포괄손익계산서', '연결현금흐름표',
                            '재무상태표', '포괄손익계산서', '현금흐름표']
             
             data_dict = {}
             
             # 각 시트에서 데이터 추출
+            print("  📊 재무 데이터 추출 중...")
             for sheet_name in wb.sheetnames:
                 if any(target in sheet_name for target in target_sheets):
                     ws = wb[sheet_name]
-                    print(f"  📊 {sheet_name} 데이터 추출 중...")
                     
                     # 시트 데이터를 행렬로 변환
                     data = []
                     for row in ws.iter_rows(values_only=True):
                         data.append(list(row))
                     
-                    # 주요 항목 찾기 (간단한 키워드 매칭)
+                    # 주요 항목 찾기
                     self._extract_financial_items(data, data_dict, sheet_name)
             
-            # Archive 시트에 데이터 업데이트
-            col_letter = self._get_column_letter(col_index + 1)
+            # 업데이트할 데이터 준비
+            col_letter = self._get_column_letter(col_index)
+            update_data = []
             
             # 날짜 정보 (1행)
-            sheet.update(f'{col_letter}1', [[datetime.now().strftime('%Y-%m-%d')]])
+            update_data.append({
+                'range': f'{col_letter}1',
+                'values': [[datetime.now().strftime('%Y-%m-%d')]]
+            })
             
-            # 분기 정보 (2행) - 예: 1Q24
+            # 분기 정보 (2행)
             quarter = self._get_quarter_info()
-            sheet.update(f'{col_letter}2', [[quarter]])
+            update_data.append({
+                'range': f'{col_letter}2',
+                'values': [[quarter]]
+            })
             
             # 데이터 업데이트 (7행부터)
             row_mapping = {
@@ -513,37 +669,77 @@ class DartExcelDownloader:
                 '영업활동현금흐름': 20, '투자활동현금흐름': 21, '재무활동현금흐름': 22
             }
             
-            # 진행률 표시
-            items_to_update = list(row_mapping.items())
-            with tqdm(total=len(items_to_update), desc="재무제표 항목 업데이트", unit="항목", leave=False) as pbar:
-                for item, row_num in items_to_update:
-                    if item in data_dict:
-                        value = self._format_number(data_dict[item])
-                        sheet.update(f'{col_letter}{row_num}', [[value]])
-                    pbar.update(1)
+            for item, row_num in row_mapping.items():
+                if item in data_dict:
+                    value = self._format_number(data_dict[item])
+                    update_data.append({
+                        'range': f'{col_letter}{row_num}',
+                        'values': [[value]]
+                    })
+            
+            # 배치 업데이트 실행
+            if update_data:
+                print(f"  📝 Archive 데이터 업데이트 중... ({len(update_data)}개 항목)")
+                try:
+                    sheet.batch_update(update_data)
+                    print(f"  ✅ 재무제표 Archive 업데이트 완료")
+                except Exception as e:
+                    print(f"  ❌ 배치 업데이트 실패: {str(e)}")
+                    
+                    # 429 에러인 경우 재시도
+                    if "429" in str(e):
+                        print(f"  ⏳ API 할당량 초과. 60초 후 재시도...")
+                        time.sleep(60)
+                        sheet.batch_update(update_data)
                     
         except Exception as e:
             print(f"❌ 재무제표 Archive 업데이트 중 오류: {str(e)}")
 
-    def _update_notes_archive(self, sheet, wb, col_index):
-        """재무제표주석 Archive 업데이트"""
+    def _update_notes_archive_batch(self, sheet, wb, col_index):
+        """재무제표주석 Archive 업데이트 (배치 처리)"""
         try:
-            # 주석 시트에서 데이터 추출
-            col_letter = self._get_column_letter(col_index + 1)
+            col_letter = self._get_column_letter(col_index)
+            
+            # 업데이트할 데이터 준비
+            update_data = []
             
             # 날짜 정보
-            sheet.update(f'{col_letter}1', [[datetime.now().strftime('%Y-%m-%d')]])
+            update_data.append({
+                'range': f'{col_letter}1',
+                'values': [[datetime.now().strftime('%Y-%m-%d')]]
+            })
             
             # 분기 정보
             quarter = self._get_quarter_info()
-            sheet.update(f'{col_letter}2', [[quarter]])
+            update_data.append({
+                'range': f'{col_letter}2',
+                'values': [[quarter]]
+            })
             
-            # 주석 항목별 요약 정보 추출 (간단한 버전)
-            # 실제로는 각 주석 시트를 분석하여 핵심 정보 추출 필요
-            sheet.update(f'{col_letter}8', [['✓']])  # 회계정책
-            sheet.update(f'{col_letter}9', [['데이터 있음']])  # 현금및현금성자산
+            # 주석 항목별 요약 정보
+            # 간단한 버전 - 실제로는 각 주석 시트 분석 필요
+            update_data.append({
+                'range': f'{col_letter}8',
+                'values': [['✓']]  # 회계정책
+            })
+            update_data.append({
+                'range': f'{col_letter}9',
+                'values': [['데이터 있음']]  # 현금및현금성자산
+            })
             
-            print(f"  ✅ 주석 데이터 업데이트 완료")
+            # 배치 업데이트 실행
+            if update_data:
+                print(f"  📝 주석 Archive 업데이트 중...")
+                try:
+                    sheet.batch_update(update_data)
+                    print(f"  ✅ 주석 Archive 업데이트 완료")
+                except Exception as e:
+                    print(f"  ❌ 배치 업데이트 실패: {str(e)}")
+                    
+                    if "429" in str(e):
+                        print(f"  ⏳ API 할당량 초과. 60초 후 재시도...")
+                        time.sleep(60)
+                        sheet.batch_update(update_data)
             
         except Exception as e:
             print(f"❌ 주석 Archive 업데이트 중 오류: {str(e)}")
