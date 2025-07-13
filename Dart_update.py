@@ -734,43 +734,100 @@ class DartExcelDownloader:
         return separate_data
 
     def _extract_financial_sheet_data(self, worksheet, sheet_name):
-        """개별 재무제표 시트에서 데이터 추출 (A열=계정명, B열=값)"""
+        """개별 재무제표 시트에서 데이터 추출 (B열만 확인)"""
         data = []
         
         try:
-            # 데이터 행들 추출 (보통 6행부터)
-            for row in worksheet.iter_rows(values_only=True, min_row=6, max_row=100):
+            # 데이터 시작 행 동적으로 찾기
+            data_start_row = self._find_data_start_row(worksheet)
+            print(f"      📍 {sheet_name} 데이터 시작 행: {data_start_row}")
+            
+            # 데이터 행들 추출
+            for row_idx, row in enumerate(worksheet.iter_rows(values_only=True, min_row=data_start_row, max_row=200), start=data_start_row):
                 if not row or len(row) < 2:
                     continue
                     
                 # A열: 계정명
                 account_name = row[0]
-                if not account_name or not isinstance(account_name, str):
+                if not account_name:
                     continue
                     
                 account_name = str(account_name).strip()
                 
-                # 유효한 계정명 필터링
-                if (len(account_name) > 2 and 
-                    not account_name.startswith(('[', '주석', 'Index')) and
+                # 유효한 계정명 필터링 (조건 완화)
+                if (len(account_name) > 1 and 
+                    not account_name.startswith(('[', '주석', 'Index', '(단위')) and
                     not account_name.endswith(('영역]', '항목', '코드')) and
-                    '개요' not in account_name):
+                    '개요' not in account_name and
+                    account_name not in ['', '-', '해당없음', 'None']):
                     
-                    # B열: 값 추출
+                    # B열 값만 추출 (가장 최신 데이터)
                     value = None
-                    if len(row) > 1 and isinstance(row[1], (int, float)) and abs(row[1]) >= 1000:
-                        value = row[1]
                     
+                    if len(row) > 1 and row[1] is not None and row[1] != '' and row[1] != 'None':
+                        cell_value = row[1]
+                        # 숫자 확인
+                        if isinstance(cell_value, (int, float)):
+                            value = cell_value
+                        # 문자열인 경우 숫자 변환 시도
+                        elif isinstance(cell_value, str):
+                            try:
+                                clean_str = str(cell_value).replace(',', '').replace('(', '-').replace(')', '').strip()
+                                if clean_str and clean_str != '-':
+                                    value = float(clean_str)
+                            except:
+                                pass
+                    
+                    # 값이 없더라도 계정명은 저장 (나중에 값이 업데이트될 수 있음)
                     data.append({
                         'account': account_name,
                         'value': value,
-                        'formatted_value': self._format_number_for_archive(value) if value else ''
+                        'formatted_value': self._format_number_for_archive(value) if value else '',
+                        'row': row_idx
                     })
+            
+            # 데이터 검증 로그
+            if data:
+                valid_count = len([d for d in data if d['value'] is not None])
+                print(f"      ✅ 유효 데이터: {valid_count}/{len(data)}개")
         
         except Exception as e:
             print(f"      ⚠️ 시트 데이터 추출 실패: {str(e)}")
+            import traceback
+            traceback.print_exc()
         
         return data
+
+    def _find_data_start_row(self, worksheet):
+        """데이터 시작 행 동적으로 찾기 (B열 기준)"""
+        try:
+            # 첫 50행 내에서 B열에 숫자 데이터가 있는 첫 행 찾기
+            for row_idx in range(1, min(51, worksheet.max_row + 1)):
+                row = worksheet[row_idx]
+                
+                # B열(2번째 열)만 확인
+                if len(row) >= 2:
+                    cell = row[1]  # B열 (0-based index에서 1)
+                    if cell and cell.value is not None:
+                        if isinstance(cell.value, (int, float)):
+                            # 이전 행부터 시작 (헤더 포함을 위해)
+                            return max(1, row_idx - 1)
+                        elif isinstance(cell.value, str):
+                            try:
+                                clean_str = str(cell.value).replace(',', '').replace('(', '-').replace(')', '').strip()
+                                if clean_str and clean_str != '-':
+                                    float(clean_str)
+                                    # 이전 행부터 시작 (헤더 포함을 위해)
+                                    return max(1, row_idx - 1)
+                            except:
+                                pass
+            
+            # 기본값
+            return 6
+            
+        except Exception as e:
+            print(f"        ⚠️ 시작 행 찾기 실패: {str(e)}")
+            return 6
 
     def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index, notes_type='connected'):
         """XBRL 재무제표주석 Archive 업데이트 (실제 주석 시트 내용 배치 업데이트, 수정됨)"""
@@ -819,7 +876,7 @@ class DartExcelDownloader:
             print(f"📋 상세 오류: {traceback.format_exc()}")
 
     def _prepare_notes_data_for_batch_update(self, wb, notes_type):
-        """주석 데이터를 배치 업데이트용으로 준비 (수정된 버전)"""
+        """주석 데이터를 배치 업데이트용으로 준비 (텍스트 지원)"""
         try:
             print(f"  🔄 주석 배치 업데이트용 데이터 준비 중...")
             
@@ -860,7 +917,10 @@ class DartExcelDownloader:
                     all_notes_account_data.append([''])
                     all_notes_value_data.append([''])
                     
-                    print(f"      ✅ {sheet_name}: {len(sheet_data['items'])}개 항목 추가")
+                    # 통계 출력
+                    text_items = len([item for item in sheet_data['items'] if item.get('value_type') == 'text'])
+                    number_items = len([item for item in sheet_data['items'] if item.get('value_type') == 'number'])
+                    print(f"      ✅ {sheet_name}: {len(sheet_data['items'])}개 항목 (숫자: {number_items}, 텍스트: {text_items})")
             
             # 통계 출력
             account_count = len([row for row in all_notes_account_data if row[0]])
@@ -874,52 +934,55 @@ class DartExcelDownloader:
             return None, None
 
     def _extract_notes_sheet_data(self, worksheet, sheet_name):
-        """개별 주석 시트에서 A열 항목과 B열 값 추출 (중분류 구조 고려, 수정됨)"""
+        """개별 주석 시트에서 데이터 추출 (텍스트 데이터 포함)"""
         try:
             sheet_data = {
                 'title': '',
                 'items': []
             }
             
-            # 제목 추출 (보통 2행에 있음)
+            # 시트 정보 수집
+            max_col = worksheet.max_column
+            max_row = min(worksheet.max_row, 500)  # 최대 500행까지만
+            print(f"      📊 {sheet_name} - 열: {max_col}, 행: {max_row}")
+            
+            # 제목 추출 (보통 1-5행에 있음)
             for row in worksheet.iter_rows(min_row=1, max_row=5, min_col=1, max_col=1, values_only=True):
-                if row[0] and isinstance(row[0], str) and sheet_name in row[0]:
-                    sheet_data['title'] = row[0]
-                    break
+                if row[0] and isinstance(row[0], str):
+                    title_candidate = str(row[0]).strip()
+                    if len(title_candidate) > 5 and (sheet_name in title_candidate or '주석' in title_candidate):
+                        sheet_data['title'] = title_candidate
+                        break
             
             if not sheet_data['title']:
                 sheet_data['title'] = f"[{sheet_name}] 주석"
             
-            # 중분류 컨텍스트 추적을 위한 변수
+            # 데이터 시작 행 찾기
+            data_start_row = 3
+            
+            # 중분류 컨텍스트 추적
             current_category = ""
             
-            # A열 항목들과 B열 값들 추출 (3행부터)
-            for row_idx, row in enumerate(worksheet.iter_rows(min_row=3, max_row=100, values_only=True), start=3):
-                if not row or len(row) < 1:
+            # 데이터 추출
+            for row_idx, row in enumerate(worksheet.iter_rows(min_row=data_start_row, max_row=max_row, values_only=True), start=data_start_row):
+                if not row or not row[0]:
                     continue
                     
                 # A열 항목명
-                item_name = row[0]
-                if not item_name or not isinstance(item_name, str):
-                    continue
-                    
-                item_name = str(item_name).strip()
+                item_name = str(row[0]).strip()
                 
                 # 빈 값이거나 무의미한 항목 제외
                 if (len(item_name) <= 1 or 
-                    item_name.startswith(('[', '주석', 'Index', '구분')) or
-                    item_name.endswith(('영역]', '항목')) or
-                    item_name in ['', '-', '해당없음']):
+                    item_name.startswith(('[', 'Index', '(단위')) or
+                    item_name.endswith(('영역]')) or
+                    item_name in ['', '-', '해당없음', 'None']):
                     continue
                 
                 # 중분류 감지
                 is_category = self._is_category_header(item_name, row_idx, worksheet)
                 
                 if is_category:
-                    # 새로운 중분류 발견
                     current_category = item_name
-                    
-                    # 중분류 제목도 Archive에 포함
                     sheet_data['items'].append({
                         'name': f"[중분류] {current_category}",
                         'value': None,
@@ -930,55 +993,63 @@ class DartExcelDownloader:
                     })
                     continue
                 
-                # 세분류 처리
-                # B열 값 추출 (수정됨: B열 값을 정확히 추출)
+                # B열 값 추출 (숫자 또는 텍스트)
                 value = None
-                if len(row) > 1 and row[1] is not None:
-                    if isinstance(row[1], (int, float)):
-                        value = row[1]
-                    elif isinstance(row[1], str):
-                        value_str = str(row[1]).strip()
-                        if value_str and value_str != '-':
-                            # 숫자 변환 시도
-                            try:
-                                # 쉼표 제거 후 숫자 변환 시도
-                                clean_num = value_str.replace(',', '').replace('(', '-').replace(')', '').strip()
-                                if clean_num and clean_num != '-':
-                                    value = float(clean_num)
-                            except:
-                                # 숫자가 아니면 문자열 그대로
-                                value = value_str
+                value_type = None
                 
-                # 고유한 항목명 생성 (중분류 정보 포함)
-                if current_category:
-                    # 중분류가 있는 경우: "중분류_세분류" 형태
-                    unique_name = f"{current_category}_{item_name}"
+                if len(row) > 1 and row[1] is not None and row[1] != '' and row[1] != 'None':
+                    cell_value = row[1]
                     
-                    # 같은 중분류에서 같은 세분류가 중복되는 경우 번호 추가
-                    duplicate_count = len([item for item in sheet_data['items'] 
-                                         if item.get('category') == current_category and 
-                                            item.get('original_name') == item_name and
-                                            not item.get('is_category', False)])
-                    if duplicate_count > 0:
-                        unique_name = f"{current_category}_{item_name}_{duplicate_count + 1}"
-                else:
-                    # 중분류가 없는 경우: 기존 방식 + 행번호
-                    unique_name = f"{item_name}_행{row_idx}"
+                    # 숫자 값 확인
+                    if isinstance(cell_value, (int, float)):
+                        value = cell_value
+                        value_type = 'number'
+                    # 문자열인 경우
+                    elif isinstance(cell_value, str):
+                        str_value = str(cell_value).strip()
+                        if str_value and str_value != '-':
+                            # 먼저 숫자 변환 시도
+                            try:
+                                clean_num = str_value.replace(',', '').replace('(', '-').replace(')', '').strip()
+                                if clean_num and clean_num != '-' and clean_num.replace('-', '').replace('.', '').isdigit():
+                                    value = float(clean_num)
+                                    value_type = 'number'
+                                else:
+                                    # 숫자가 아닌 텍스트로 처리
+                                    value = str_value
+                                    value_type = 'text'
+                            except:
+                                # 텍스트로 처리
+                                value = str_value
+                                value_type = 'text'
+                
+                # 항목 추가
+                unique_name = f"{current_category}_{item_name}" if current_category else item_name
                 
                 sheet_data['items'].append({
                     'name': unique_name,
-                    'original_name': item_name,  # 원본 이름 보존
+                    'original_name': item_name,
                     'value': value,
-                    'formatted_value': self._format_notes_value(value) if value is not None else '',
+                    'formatted_value': self._format_notes_value(value, value_type) if value is not None else '',
                     'category': current_category,
                     'is_category': False,
-                    'row_number': row_idx
+                    'row_number': row_idx,
+                    'value_type': value_type
                 })
+            
+            # 결과 요약
+            if sheet_data['items']:
+                value_count = len([item for item in sheet_data['items'] if item.get('value') is not None])
+                text_count = len([item for item in sheet_data['items'] if item.get('value_type') == 'text'])
+                number_count = len([item for item in sheet_data['items'] if item.get('value_type') == 'number'])
+                print(f"      📊 추출 완료: 총 {len(sheet_data['items'])}개 항목 (숫자: {number_count}개, 텍스트: {text_count}개)")
             
             return sheet_data if sheet_data['items'] else None
             
         except Exception as e:
             print(f"      ⚠️ 주석 시트 {sheet_name} 데이터 추출 실패: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def _is_category_header(self, item_name, row_idx, worksheet):
@@ -1041,26 +1112,33 @@ class DartExcelDownloader:
             print(f"        ⚠️ 중분류 판단 실패: {str(e)}")
             return False
 
-    def _format_notes_value(self, value):
-        """주석 값 포맷팅"""
+    def _format_notes_value(self, value, value_type=None):
+        """주석 값 포맷팅 (숫자 및 텍스트 처리)"""
         try:
             if value is None:
                 return ''
             
+            # 텍스트인 경우
+            if value_type == 'text' or isinstance(value, str):
+                # 긴 텍스트는 적절히 잘라서 표시
+                text_value = str(value).strip()
+                if len(text_value) > 100:
+                    return text_value[:97] + "..."
+                else:
+                    return text_value
+            
             # 숫자인 경우 억원 단위로 변환
-            if isinstance(value, (int, float)):
+            elif isinstance(value, (int, float)):
                 if abs(value) >= 100000000:  # 1억 이상
                     billion_value = value / 100000000
                     return f"{billion_value:.2f}억원"
                 elif abs(value) >= 1000000:  # 100만 이상
                     million_value = value / 1000000
                     return f"{million_value:.1f}백만원"
+                elif abs(value) >= 1000:  # 1000 이상
+                    return f"{value:,.0f}"
                 else:
                     return str(value)
-            
-            # 문자열인 경우 그대로 반환 (날짜, 기간 등)
-            elif isinstance(value, str):
-                return value[:50]  # 최대 50자로 제한
             
             else:
                 return str(value)
@@ -1098,6 +1176,9 @@ class DartExcelDownloader:
     def _clean_number(self, value):
         """숫자 값 정제"""
         try:
+            if isinstance(value, (int, float)):
+                return float(value)
+            
             str_val = str(value).replace(',', '').replace('(', '-').replace(')', '').strip()
             if not str_val or str_val == '-':
                 return None
