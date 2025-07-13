@@ -507,7 +507,7 @@ class DartExcelDownloader:
             except gspread.exceptions.WorksheetNotFound:
                 print(f"🆕 새로운 {sheet_name} 시트 생성")
                 time.sleep(2)
-                archive_sheet = self.workbook.add_worksheet(sheet_name, 1000, 20)  # 20열까지 확장
+                archive_sheet = self.workbook.add_worksheet(sheet_name, 1000, 20)  # 1000행, 20열로 확장
                 time.sleep(2)
             
             # 시트가 새로 생성된 경우 헤더 설정
@@ -670,18 +670,18 @@ class DartExcelDownloader:
             row_6_values = sheet.row_values(6)
             
             # M열(13번째 열)부터 시작해서 마지막 데이터 열 찾기
-            last_col = 12  # M열 = 13번째 열 (0-based index에서는 12)
+            last_col = 11  # M열 = 13번째 열 (0-based index에서는 12) -> 수정: 11로 변경
             
-            for i in range(12, len(row_6_values)):  # M열부터 검색
+            for i in range(11, len(row_6_values)):  # M열부터 검색 (12에서 11로 수정)
                 if row_6_values[i]:  # 데이터가 있으면
                     last_col = i
             
             # 다음 열에 새 데이터 추가
             next_col = last_col + 1
             
-            # 최소 M열(12)부터 시작
-            if next_col < 12:
-                next_col = 12
+            # 최소 M열(11)부터 시작 (12에서 11로 수정)
+            if next_col < 11:
+                next_col = 11
             
             col_letter = self._get_column_letter(next_col)
             print(f"📍 새 데이터 추가 위치: {col_letter}열 (인덱스: {next_col})")
@@ -690,7 +690,7 @@ class DartExcelDownloader:
             
         except Exception as e:
             print(f"⚠️ 마지막 열 찾기 실패: {str(e)}")
-            return 12  # 기본값: M열
+            return 11  # 기본값: M열 (12에서 11로 수정)
 
     def _extract_balance_sheet_data(self, wb):
         """재무상태표 데이터 추출 (Series 오류 완전 해결)"""
@@ -973,129 +973,372 @@ class DartExcelDownloader:
         return data
 
     def _analyze_xbrl_notes_sheets(self, wb):
-        """XBRL 주석 시트들 분석 (오류 해결)"""
+        """XBRL 주석 시트들 분석 (D8xxxxx 시트 기반 재설계)"""
         analysis = {}
         
         try:
             print(f"    📚 주석 시트 분석 중... (총 {len(wb.sheetnames)}개 시트)")
             
-            # 시트 수에 따른 기본 분석
-            sheet_count = len(wb.sheetnames)
+            # D8xxxxx 시트들 필터링
+            note_sheets = [name for name in wb.sheetnames if name.startswith('D8')]
+            print(f"    📄 D8 주석 시트 {len(note_sheets)}개 발견")
             
-            # 주석 항목들에 대한 기본 상태 설정 (확장된 항목)
-            base_analysis = {
-                '회계정책': '✓',
-                '현금및현금성자산': '상세데이터',
-                '매출채권': '상세데이터',
-                '재고자산': '상세데이터',
-                '유형자산': '상세데이터',
-                '사용권자산': '상세데이터',
-                '무형자산': '상세데이터',
-                '관계기업투자': '상세데이터',
-                '기타금융자산': '상세데이터',
-                '매입채무': '상세데이터',
-                '기타유동부채': '상세데이터',
-                '충당부채': '상세데이터',
-                '확정급여부채': '상세데이터',
-                '이연법인세': '상세데이터',
-                '자본금': '상세데이터',
-                '자본잉여금': '상세데이터',
-                '수익인식': '정성정보',
-                '주당손익': '정량정보',
-                '법인세비용': '상세데이터'
-            }
+            # 연결/별도 구분
+            connected_sheets = [name for name in note_sheets if name.endswith('0')]
+            separate_sheets = [name for name in note_sheets if name.endswith('5')]
             
-            if sheet_count > 10:
-                analysis.update(base_analysis)
-                print(f"    📊 {len(analysis)}개 주석 항목 기본 설정 완료")
-            else:
-                # 시트가 적은 경우 일부 항목만 설정
-                limited_analysis = {
-                    '회계정책': '✓',
-                    '현금및현금성자산': '기본데이터',
-                    '유형자산': '기본데이터',
-                    '무형자산': '기본데이터',
-                    '수익인식': '정성정보',
-                    '주당손익': '정량정보',
-                    '법인세비용': '기본데이터'
-                }
-                analysis.update(limited_analysis)
-                print(f"    📊 {len(analysis)}개 주석 항목 제한 설정 완료")
+            print(f"    🔗 연결 주석: {len(connected_sheets)}개, 📋 별도 주석: {len(separate_sheets)}개")
             
-            # 실제 시트명 기반 분석 (선택적)
-            d8_sheets = [name for name in wb.sheetnames if name.startswith('D8')]
-            if d8_sheets:
-                print(f"    📄 D8xxx 주석 시트 {len(d8_sheets)}개 발견")
+            # 각 주석 시트 분석
+            for sheet_name in note_sheets:
+                try:
+                    if sheet_name not in wb.sheetnames:
+                        continue
+                        
+                    worksheet = wb[sheet_name]
+                    sheet_analysis = self._analyze_single_note_sheet(worksheet, sheet_name)
+                    
+                    if sheet_analysis:
+                        # 주석 제목에서 카테고리 추출
+                        category = self._extract_note_category(sheet_analysis.get('title', ''))
+                        if category:
+                            analysis[category] = sheet_analysis['status']
+                            
+                except Exception as e:
+                    print(f"      ⚠️ {sheet_name} 분석 실패: {str(e)}")
+                    continue
+            
+            # 분석 결과가 없을 경우 기본값 제공
+            if not analysis:
+                analysis = self._get_default_notes_analysis()
+            
+            print(f"    ✅ 총 {len(analysis)}개 주석 카테고리 분석 완료")
             
         except Exception as e:
             print(f"    ❌ 주석 시트 분석 실패: {str(e)}")
-            # 최소한의 기본 분석 제공
-            analysis = {
-                '회계정책': '✓',
-                '현금및현금성자산': '데이터있음',
-                '수익인식': '정성정보',
-                '주당손익': '정량정보',
-                '법인세비용': '데이터있음'
-            }
+            analysis = self._get_default_notes_analysis()
         
         return analysis
 
-    def _update_xbrl_financial_archive_batch(self, sheet, wb, col_index):
-        """XBRL 재무제표 Archive 업데이트 (시트별 고정 행 영역 적용)"""
+    def _analyze_single_note_sheet(self, worksheet, sheet_name):
+        """개별 주석 시트 분석"""
         try:
-            # 데이터 추출
+            analysis = {
+                'title': '',
+                'status': 'N/A',
+                'has_data': False,
+                'data_rows': 0
+            }
+            
+            # 제목 추출 (보통 A2 셀에 위치)
+            title_cell = None
+            for row in worksheet.iter_rows(min_row=1, max_row=5, min_col=1, max_col=1, values_only=True):
+                if row[0] and isinstance(row[0], str) and 'D8' in row[0]:
+                    analysis['title'] = row[0]
+                    break
+            
+            # 데이터 존재 여부 확인
+            data_count = 0
+            text_count = 0
+            number_count = 0
+            
+            # 처음 20행만 검사 (성능 고려)
+            for row in worksheet.iter_rows(min_row=3, max_row=22, values_only=True):
+                if any(cell for cell in row if cell):
+                    data_count += 1
+                    for cell in row:
+                        if isinstance(cell, (int, float)) and cell != 0:
+                            number_count += 1
+                        elif isinstance(cell, str) and len(cell.strip()) > 5:
+                            text_count += 1
+            
+            analysis['data_rows'] = data_count
+            analysis['has_data'] = data_count > 0
+            
+            # 상태 결정
+            if number_count > 5:
+                analysis['status'] = '정량데이터'
+            elif text_count > 10:
+                analysis['status'] = '정성정보'
+            elif data_count > 0:
+                analysis['status'] = '기본정보'
+            else:
+                analysis['status'] = 'N/A'
+            
+            return analysis
+            
+        except Exception as e:
+            print(f"      ⚠️ 시트 {sheet_name} 개별 분석 실패: {str(e)}")
+            return None
+
+    def _extract_note_category(self, title):
+        """주석 제목에서 카테고리 추출"""
+        if not title or not isinstance(title, str):
+            return None
+            
+        # 제목에서 주요 키워드 추출
+        title_lower = title.lower()
+        
+        # 카테고리 매핑
+        category_mapping = {
+            '회계정책': ['회계정책', '정책', '추정'],
+            '현금및현금성자산': ['현금', '금융자산', '유가증권'],
+            '매출채권': ['매출채권', '채권', '수취채권'],
+            '재고자산': ['재고자산', '재고'],
+            '유형자산': ['유형자산', '토지', '건물', '기계', '설비'],
+            '사용권자산': ['사용권자산', '리스자산', '리스'],
+            '무형자산': ['무형자산', '영업권', '특허', '소프트웨어'],
+            '관계기업투자': ['관계기업', '지분법', '투자'],
+            '기타금융자산': ['금융자산', '파생상품', '공정가치'],
+            '매입채무': ['매입채무', '지급채무', '미지급'],
+            '기타유동부채': ['유동부채', '선수금', '예수금'],
+            '충당부채': ['충당부채', '충당금', '보증', '소송'],
+            '확정급여부채': ['확정급여', '퇴직급여', '연금', '급여'],
+            '이연법인세': ['이연법인세', '법인세'],
+            '자본금': ['자본금', '주식', '주주'],
+            '자본잉여금': ['자본잉여금', '주식발행초과금'],
+            '수익인식': ['수익', '매출', '계약'],
+            '주당손익': ['주당이익', '주당손익', 'eps'],
+            '법인세비용': ['법인세비용', '세무', '세율']
+        }
+        
+        for category, keywords in category_mapping.items():
+            if any(keyword in title_lower for keyword in keywords):
+                return category
+        
+        return '기타'
+
+    def _get_default_notes_analysis(self):
+        """기본 주석 분석 결과"""
+        return {
+            '회계정책': '기본정보',
+            '현금및현금성자산': 'N/A',
+            '유형자산': 'N/A',
+            '무형자산': 'N/A',
+            '수익인식': 'N/A',
+            '주당손익': 'N/A',
+            '법인세비용': 'N/A'
+        }
+
+    def _update_xbrl_financial_archive_batch(self, sheet, wb, col_index):
+        """XBRL 재무제표 Archive 업데이트 (대용량 배치 업데이트 최적화)"""
+        try:
             print(f"  📊 XBRL 재무제표 데이터 추출 중...")
             
-            # 업데이트할 컬럼 위치
+            # 업데이트할 컬럼 위치 (M열부터 시작)
             col_letter = self._get_column_letter(col_index)
             print(f"  📍 데이터 입력 위치: {col_letter}열")
             
-            # 배치 업데이트 데이터 준비
-            update_data = []
-            
-            # 헤더 정보 업데이트 (5행: 분기정보, 6행: 업데이트날짜)
+            # 헤더 정보 업데이트
             report_date = datetime.now().strftime('%Y-%m-%d')
             quarter_info = self._get_quarter_info()
             
-            # 헤더 업데이트 (5행, 6행)
-            update_data.extend([
-                {'range': f'{col_letter}5', 'values': [[quarter_info]]},  # 분기정보
-                {'range': f'{col_letter}6', 'values': [[report_date]]},   # 업데이트날짜
-                {'range': f'J1', 'values': [[f'최종업데이트: {report_date}']]}  # J1셀 최종업데이트
-            ])
+            # STEP 1: 모든 재무 데이터를 메모리에서 준비
+            all_account_data, all_value_data = self._prepare_financial_data_for_batch_update(wb)
             
-            # L열에 계정명이 없으면 추출해서 업데이트
-            self._extract_and_update_account_names_by_sheet(sheet, wb, update_data)
+            # STEP 2: 대용량 배치 업데이트 (최대 3번의 API 호출)
+            print(f"  🚀 대용량 배치 업데이트 시작...")
             
-            # 실제 재무 데이터 업데이트 (시트별 고정 행 영역 적용)
-            data_updates = self._update_financial_data_by_type(wb, col_letter, {})
-            update_data.extend(data_updates)
+            # 배치 1: 헤더 정보 (한 번에)
+            header_range = f'{col_letter}5:{col_letter}6'
+            header_data = [[quarter_info], [report_date]]
+            sheet.update(header_range, header_data)
+            print(f"    ✅ 헤더 정보 업데이트 완료")
             
-            print(f"  📊 총 업데이트할 셀: {len(update_data)}개")
+            # 배치 2: L열 계정명 대량 업데이트 (한 번에)
+            if all_account_data:
+                account_range = f'L7:L500'
+                sheet.update(account_range, all_account_data)
+                print(f"    ✅ L열 계정명 {len([row for row in all_account_data if row[0]])}개 업데이트 완료")
             
-            # 배치 업데이트 실행
-            if update_data:
-                print(f"  📤 Archive 업데이트 중... ({len(update_data)}개 셀)")
-                try:
-                    # 작은 청크로 나누어 안전하게 업데이트
-                    chunk_size = 15
-                    for i in range(0, len(update_data), chunk_size):
-                        chunk = update_data[i:i + chunk_size]
-                        sheet.batch_update(chunk)
-                        if i + chunk_size < len(update_data):
-                            time.sleep(1)
-                    
-                    print(f"  ✅ XBRL 재무제표 Archive 업데이트 완료")
-                    
-                except Exception as e:
-                    print(f"  ❌ 배치 업데이트 실패: {str(e)}")
-                    # 개별 업데이트로 fallback
-                    self._fallback_individual_update(sheet, update_data)
+            time.sleep(2)  # API 제한 회피
+            
+            # 배치 3: M열 값 대량 업데이트 (한 번에)
+            if all_value_data:
+                value_range = f'{col_letter}7:{col_letter}500'
+                sheet.update(value_range, all_value_data)
+                print(f"    ✅ {col_letter}열 값 {len([row for row in all_value_data if row[0]])}개 업데이트 완료")
+            
+            # 최종 업데이트 시간 기록
+            sheet.update('J1', f'최종업데이트: {report_date}')
+            
+            print(f"  ✅ XBRL 재무제표 Archive 배치 업데이트 완료 (총 4번의 API 호출)")
             
         except Exception as e:
             print(f"❌ XBRL 재무제표 Archive 업데이트 실패: {str(e)}")
             import traceback
             print(f"📋 상세 오류: {traceback.format_exc()}")
+
+    def _prepare_financial_data_for_batch_update(self, wb):
+        """재무 데이터를 배치 업데이트용으로 준비 (메모리에서 처리)"""
+        try:
+            print(f"  🔄 배치 업데이트용 데이터 준비 중...")
+            
+            # 494행 (7~500행) 배열 초기화
+            all_account_data = [[''] for _ in range(494)]  # L열용
+            all_value_data = [[''] for _ in range(494)]    # M열용
+            
+            # 연결 재무제표 데이터 추출 및 배치
+            connected_data = self._extract_all_connected_financial_data(wb)
+            self._place_data_in_batch_arrays(connected_data, all_account_data, all_value_data, 'connected')
+            
+            # 별도 재무제표 데이터 추출 및 배치
+            separate_data = self._extract_all_separate_financial_data(wb)
+            self._place_data_in_batch_arrays(separate_data, all_account_data, all_value_data, 'separate')
+            
+            # 통계 출력
+            account_count = len([row for row in all_account_data if row[0]])
+            value_count = len([row for row in all_value_data if row[0]])
+            print(f"    📋 준비 완료: 계정명 {account_count}개, 값 {value_count}개")
+            
+            return all_account_data, all_value_data
+            
+        except Exception as e:
+            print(f"  ❌ 배치 데이터 준비 실패: {str(e)}")
+            return None, None
+
+    def _extract_all_connected_financial_data(self, wb):
+        """연결 재무제표 모든 데이터 추출"""
+        connected_data = {}
+        
+        try:
+            # 연결 시트들 처리
+            for sheet_code, info in self.financial_row_mapping['connected'].items():
+                if sheet_code in wb.sheetnames:
+                    sheet_data = self._extract_financial_sheet_data(wb[sheet_code], info['name'])
+                    connected_data[sheet_code] = {
+                        'name': info['name'],
+                        'data': sheet_data,
+                        'start_row': info['start'],
+                        'end_row': info['end']
+                    }
+                    print(f"    📄 [연결] {sheet_code}: {len(sheet_data)}개 계정")
+            
+        except Exception as e:
+            print(f"    ⚠️ 연결 데이터 추출 실패: {str(e)}")
+        
+        return connected_data
+
+    def _extract_all_separate_financial_data(self, wb):
+        """별도 재무제표 모든 데이터 추출"""
+        separate_data = {}
+        
+        try:
+            # 별도 시트들 처리
+            for sheet_code, info in self.financial_row_mapping['separate'].items():
+                if sheet_code in wb.sheetnames:
+                    sheet_data = self._extract_financial_sheet_data(wb[sheet_code], info['name'])
+                    separate_data[sheet_code] = {
+                        'name': info['name'],
+                        'data': sheet_data,
+                        'start_row': info['start'],
+                        'end_row': info['end']
+                    }
+                    print(f"    📄 [별도] {sheet_code}: {len(sheet_data)}개 계정")
+            
+        except Exception as e:
+            print(f"    ⚠️ 별도 데이터 추출 실패: {str(e)}")
+        
+        return separate_data
+
+    def _extract_financial_sheet_data(self, worksheet, sheet_name):
+        """개별 재무제표 시트에서 데이터 추출 (최신 값 우선)"""
+        data = []
+        
+        try:
+            # 데이터 행들 추출 (보통 6행부터)
+            for row in worksheet.iter_rows(values_only=True, min_row=6, max_row=100):
+                if not row or len(row) < 2:
+                    continue
+                    
+                # 계정명 (A열)
+                account_name = row[0]
+                if not account_name or not isinstance(account_name, str):
+                    continue
+                    
+                account_name = str(account_name).strip()
+                
+                # 유효한 계정명 필터링
+                if (len(account_name) > 2 and 
+                    not account_name.startswith(('[', '주석', 'Index')) and
+                    not account_name.endswith(('영역]', '항목', '코드')) and
+                    '개요' not in account_name):
+                    
+                    # 최신 값 추출 (B열 우선)
+                    value = None
+                    if len(row) > 1 and isinstance(row[1], (int, float)) and abs(row[1]) >= 1000:
+                        value = row[1]
+                    
+                    data.append({
+                        'account': account_name,
+                        'value': value,
+                        'formatted_value': self._format_number_for_archive(value) if value else ''
+                    })
+        
+        except Exception as e:
+            print(f"      ⚠️ 시트 데이터 추출 실패: {str(e)}")
+        
+        return data
+
+    def _place_data_in_batch_arrays(self, financial_data, account_array, value_array, data_type):
+        """추출된 재무 데이터를 배치 배열에 배치"""
+        try:
+            for sheet_code, sheet_info in financial_data.items():
+                start_row = sheet_info['start_row']
+                end_row = sheet_info['end_row']
+                data_list = sheet_info['data']
+                sheet_name = sheet_info['name']
+                
+                # 배열 인덱스 (7행부터 시작하므로 -7)
+                array_start = start_row - 7
+                array_end = end_row - 7
+                
+                if array_start < 0 or array_end >= len(account_array):
+                    continue
+                
+                # 시트명 표시 (첫 번째 행)
+                type_prefix = '[연결]' if data_type == 'connected' else '[별도]'
+                account_array[array_start][0] = f"{type_prefix} {sheet_name}"
+                value_array[array_start][0] = ''
+                
+                # 실제 계정 데이터 배치
+                current_index = array_start + 1
+                for item in data_list:
+                    if current_index <= array_end and current_index < len(account_array):
+                        account_array[current_index][0] = item['account']
+                        value_array[current_index][0] = item['formatted_value']
+                        current_index += 1
+                    else:
+                        break
+                
+                print(f"      ✅ {sheet_code} → {start_row}~{end_row}행 배치 완료")
+        
+        except Exception as e:
+            print(f"    ⚠️ 배열 배치 실패: {str(e)}")
+
+    def _ensure_account_names_in_l_column(self, sheet, wb, update_data):
+        """L열 계정명 확인 (배치 업데이트로 대체됨)"""
+        # 이 메서드는 배치 업데이트로 대체되었으므로 빈 구현
+        print(f"    📋 L열 계정명은 배치 업데이트로 처리됩니다.")
+        pass
+
+    def _vlookup_style_data_matching(self, sheet, wb, col_letter):
+        """VLOOKUP 매칭 (배치 업데이트로 대체됨)"""
+        # 이 메서드는 배치 업데이트로 대체되었으므로 빈 구현
+        print(f"    🔍 데이터 매칭은 배치 업데이트로 처리됩니다.")
+        return []
+
+    def _extract_and_update_account_names_by_sheet(self, sheet, wb, update_data):
+        """시트별 계정명 추출 (배치 업데이트로 대체됨)"""
+        # 이 메서드는 배치 업데이트로 대체되었으므로 빈 구현
+        print(f"    📋 시트별 계정명 추출은 배치 업데이트로 처리됩니다.")
+        pass
+
+    def _update_financial_data_by_type(self, wb, col_letter, all_financial_data):
+        """재무 데이터 업데이트 (배치 업데이트로 대체됨)"""
+        # 이 메서드는 배치 업데이트로 대체되었으므로 빈 구현
+        print(f"    📊 재무 데이터 업데이트는 배치 업데이트로 처리됩니다.")
+        return []
 
     def _extract_and_update_account_names_by_sheet(self, sheet, wb, update_data):
         """시트별 고정 행 영역에 계정명 추출 및 업데이트"""
@@ -1465,7 +1708,7 @@ class DartExcelDownloader:
         return data
 
     def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index, notes_type='connected'):
-        """XBRL 재무제표주석 Archive 업데이트 (주석별 고정 행 영역 적용)"""
+        """XBRL 재무제표주석 Archive 업데이트 (실제 주석 내용 반영)"""
         try:
             # 주석 데이터 분석
             print(f"  📝 XBRL 주석 데이터 분석 중... ({notes_type})")
@@ -1504,22 +1747,36 @@ class DartExcelDownloader:
                 {'range': f'J1', 'values': [[f'최종업데이트: {report_date}']]}
             ])
             
-            # 주석별 고정 행 영역에 데이터 업데이트
+            # 실제 주석 내용을 각 할당된 행 영역에 업데이트
             updated_count = 0
             for note_name, info in self.notes_row_mapping.items():
                 start_row = info['start']
                 end_row = info['end']
+                display_name = info.get('name', note_name)
                 
+                # 해당 주석 항목의 상태 확인
                 if note_name in notes_analysis:
                     status = notes_analysis[note_name]
-                    # 시작 행에만 상태 정보 입력
+                    
+                    # 시작 행에 상태 정보 입력
                     update_data.append({
                         'range': f'{col_letter}{start_row}',
                         'values': [[status]]
                     })
-                    print(f"    📄 {note_name} ({start_row}행): {status}")
+                    
+                    # 주석 항목에 대한 세부 정보도 추가 (선택적)
+                    if status in ['정량데이터', '정성정보'] and start_row + 1 <= end_row:
+                        detail_info = self._get_note_detail_info(wb, note_name)
+                        if detail_info:
+                            update_data.append({
+                                'range': f'{col_letter}{start_row + 1}',
+                                'values': [[detail_info]]
+                            })
+                    
+                    print(f"    📄 {display_name} ({start_row}행): {status}")
                     updated_count += 1
                 else:
+                    # 해당 주석 항목이 없는 경우
                     update_data.append({
                         'range': f'{col_letter}{start_row}',
                         'values': [['N/A']]
@@ -1548,6 +1805,66 @@ class DartExcelDownloader:
             print(f"❌ XBRL 주석 Archive 업데이트 실패: {str(e)}")
             import traceback
             print(f"📋 상세 오류: {traceback.format_exc()}")
+
+    def _get_note_detail_info(self, wb, note_name):
+        """주석 항목의 상세 정보 추출"""
+        try:
+            # D8 시트들에서 해당 주석과 관련된 정보 찾기
+            note_sheets = [name for name in wb.sheetnames if name.startswith('D8')]
+            
+            # 주석명과 매칭되는 시트 찾기
+            for sheet_name in note_sheets:
+                try:
+                    worksheet = wb[sheet_name]
+                    
+                    # 제목에서 주석 내용 확인
+                    for row in worksheet.iter_rows(min_row=1, max_row=5, min_col=1, max_col=1, values_only=True):
+                        if row[0] and isinstance(row[0], str):
+                            title_lower = row[0].lower()
+                            note_name_lower = note_name.lower()
+                            
+                            # 키워드 매칭
+                            if (note_name_lower in title_lower or 
+                                self._check_note_keyword_match(note_name_lower, title_lower)):
+                                
+                                # 데이터 개수 카운트
+                                data_count = 0
+                                for data_row in worksheet.iter_rows(min_row=3, max_row=15, values_only=True):
+                                    if any(cell for cell in data_row if cell):
+                                        data_count += 1
+                                
+                                if data_count > 0:
+                                    return f"데이터{data_count}행"
+                                else:
+                                    return "정성정보"
+                                    
+                except Exception:
+                    continue
+            
+            return "기본정보"
+            
+        except Exception as e:
+            print(f"    ⚠️ 주석 상세 정보 추출 실패 ({note_name}): {str(e)}")
+            return "정보있음"
+
+    def _check_note_keyword_match(self, note_name, title):
+        """주석명과 시트 제목의 키워드 매칭 확인"""
+        keyword_groups = {
+            '현금': ['현금', '금융자산'],
+            '재고': ['재고'],
+            '유형': ['유형', '자산'],
+            '무형': ['무형', '자산'],
+            '리스': ['리스', '사용권'],
+            '자본': ['자본', '주식'],
+            '수익': ['수익', '매출'],
+            '법인세': ['법인세', '세무']
+        }
+        
+        for base_keyword, related_keywords in keyword_groups.items():
+            if base_keyword in note_name:
+                return any(keyword in title for keyword in related_keywords)
+        
+        return False
 
     def _fallback_individual_update(self, sheet, update_data):
         """개별 업데이트 fallback"""
