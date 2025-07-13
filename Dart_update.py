@@ -1199,65 +1199,78 @@ class DartExcelDownloader:
             return None
 
     def _get_quarter_info(self):
-        """보고서 기준 분기 정보 반환 (개선된 버전)"""
-        if self.current_report:
-            report_name = self.current_report['report_nm']
-            rcept_no = self.current_report.get('rcept_no', '')
-            
-            print(f"  📅 보고서 분석: {report_name}")
-            
-            # 정규식으로 날짜 추출 개선
-            import re
-            
-            # 패턴 1: (YYYY.MM) 형태
-            date_pattern1 = re.search(r'\((\d{4})\.(\d{2})\)', report_name)
-            # 패턴 2: YYYY년 MM월 형태  
-            date_pattern2 = re.search(r'(\d{4})년\s*(\d{1,2})월', report_name)
-            # 패턴 3: 분기보고서 패턴
-            if '1분기' in report_name:
-                current_year = datetime.now().year
-                quarter_text = f"1Q{str(current_year)[2:]}"
-                print(f"    📊 1분기 보고서 감지: {quarter_text}")
-                return quarter_text
-            elif '반기' in report_name or '2분기' in report_name:
-                current_year = datetime.now().year
-                quarter_text = f"2Q{str(current_year)[2:]}"
-                print(f"    📊 2분기/반기 보고서 감지: {quarter_text}")
-                return quarter_text
-            elif '3분기' in report_name:
-                current_year = datetime.now().year
-                quarter_text = f"3Q{str(current_year)[2:]}"
-                print(f"    📊 3분기 보고서 감지: {quarter_text}")
-                return quarter_text
-            elif '연결재무제표' in report_name and '3월' in report_name:
-                current_year = datetime.now().year
-                quarter_text = f"1Q{str(current_year)[2:]}"
-                print(f"    📊 3월 연결재무제표 감지: {quarter_text}")
-                return quarter_text
-            
-            year, month = None, None
-            
-            if date_pattern1:
-                year, month = date_pattern1.groups()
-                month = int(month)
-            elif date_pattern2:
-                year, month = date_pattern2.groups()
-                month = int(month)
-            
-            if year and month:
-                # 분기 계산
-                if month <= 3:
-                    quarter = 1
-                elif month <= 6:
-                    quarter = 2
-                elif month <= 9:
-                    quarter = 3
+        """보고서 기준 분기 정보 반환 (pandas Series 오류 해결)"""
+        try:
+            # self.current_report가 pandas Series인지 확인하고 안전하게 처리
+            if self.current_report is not None and hasattr(self.current_report, 'get'):
+                # pandas Series인 경우 안전하게 값 추출
+                if hasattr(self.current_report, 'iloc'):
+                    # pandas Series인 경우
+                    report_name = self.current_report.get('report_nm', '')
+                    rcept_no = self.current_report.get('rcept_no', '')
                 else:
-                    quarter = 4
+                    # 일반 dict인 경우
+                    report_name = self.current_report.get('report_nm', '')
+                    rcept_no = self.current_report.get('rcept_no', '')
                 
-                quarter_text = f"{quarter}Q{year[2:]}"
-                print(f"    📊 추출된 분기: {quarter_text} (년도: {year}, 월: {month})")
-                return quarter_text
+                if report_name:
+                    print(f"  📅 보고서 분석: {report_name}")
+                    
+                    # 정규식으로 날짜 추출 개선
+                    import re
+                    
+                    # 패턴 1: (YYYY.MM) 형태
+                    date_pattern1 = re.search(r'\((\d{4})\.(\d{2})\)', str(report_name))
+                    # 패턴 2: YYYY년 MM월 형태  
+                    date_pattern2 = re.search(r'(\d{4})년\s*(\d{1,2})월', str(report_name))
+                    # 패턴 3: 분기보고서 패턴
+                    if '1분기' in str(report_name):
+                        current_year = datetime.now().year
+                        quarter_text = f"1Q{str(current_year)[2:]}"
+                        print(f"    📊 1분기 보고서 감지: {quarter_text}")
+                        return quarter_text
+                    elif '반기' in str(report_name) or '2분기' in str(report_name):
+                        current_year = datetime.now().year
+                        quarter_text = f"2Q{str(current_year)[2:]}"
+                        print(f"    📊 2분기/반기 보고서 감지: {quarter_text}")
+                        return quarter_text
+                    elif '3분기' in str(report_name):
+                        current_year = datetime.now().year
+                        quarter_text = f"3Q{str(current_year)[2:]}"
+                        print(f"    📊 3분기 보고서 감지: {quarter_text}")
+                        return quarter_text
+                    elif '연결재무제표' in str(report_name) and '3월' in str(report_name):
+                        current_year = datetime.now().year
+                        quarter_text = f"1Q{str(current_year)[2:]}"
+                        print(f"    📊 3월 연결재무제표 감지: {quarter_text}")
+                        return quarter_text
+                    
+                    year, month = None, None
+                    
+                    if date_pattern1:
+                        year, month = date_pattern1.groups()
+                        month = int(month)
+                    elif date_pattern2:
+                        year, month = date_pattern2.groups()
+                        month = int(month)
+                    
+                    if year and month:
+                        # 분기 계산
+                        if month <= 3:
+                            quarter = 1
+                        elif month <= 6:
+                            quarter = 2
+                        elif month <= 9:
+                            quarter = 3
+                        else:
+                            quarter = 4
+                        
+                        quarter_text = f"{quarter}Q{year[2:]}"
+                        print(f"    📊 추출된 분기: {quarter_text} (년도: {year}, 월: {month})")
+                        return quarter_text
+        
+        except Exception as e:
+            print(f"    ⚠️ 분기 정보 추출 중 오류: {str(e)}")
         
         # 기본값: 현재 날짜 기준
         now = datetime.now()
