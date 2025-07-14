@@ -1,0 +1,192 @@
+name: DART Excel Download
+
+on:
+  schedule:
+    - cron: '15 0 31 3 *'        # 3월 31일 오전 9시 15분 (UTC+9)
+    - cron: '15 0 17 5,8,11 *'   # 5월, 8월, 11월 17일 오전 9시 15분 (UTC+9)
+  workflow_dispatch:             # 수동 실행 가능
+    inputs:
+      debug_mode:
+        description: '디버그 모드 활성화'
+        required: false
+        default: 'false'
+        type: boolean
+      custom_date_range:
+        description: '사용자 정의 날짜 범위 사용'
+        required: false
+        default: 'false'
+        type: boolean
+      start_date:
+        description: '시작일 (YYYYMMDD 형식, 예: 20240101)'
+        required: false
+        default: ''
+        type: string
+      end_date:
+        description: '종료일 (YYYYMMDD 형식, 예: 20241231)'
+        required: false
+        default: ''
+        type: string
+      number_unit:
+        description: '숫자 표시 단위'
+        required: false
+        default: 'million'
+        type: choice
+        options:
+          - million      # 백만원
+          - hundred_million  # 억원
+          - billion      # 십억원
+      save_new_accounts:
+        description: '신규 계정명을 별도 파일로 저장'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  download-dart-excel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    env:
+      # API 키 및 인증 정보
+      DART_API_KEY: ${{ secrets.DART_API_KEY }}
+      GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+      
+      # 회사 정보 (여러 회사 처리 시 matrix 사용 권장)
+      COMPANY_CORP_CODE: '307950'
+      COMPANY_NAME: '현대오토에버'
+      COMPANY_SPREADSHEET_VAR: 'AUTOEVER_SPREADSHEET_ID'
+      AUTOEVER_SPREADSHEET_ID: ${{ secrets.AUTOEVER_SPREADSHEET_ID }}
+      
+      # 실행 옵션
+      DEBUG_MODE: ${{ github.event.inputs.debug_mode || 'false' }}
+      CUSTOM_DATE_RANGE: ${{ github.event.inputs.custom_date_range || 'false' }}
+      MANUAL_START_DATE: ${{ github.event.inputs.start_date }}
+      MANUAL_END_DATE: ${{ github.event.inputs.end_date }}
+      ENABLE_ARCHIVE_UPDATE: 'true'
+      NUMBER_UNIT: ${{ github.event.inputs.number_unit || 'million' }}  # 단위 설정
+      SAVE_NEW_ACCOUNTS: ${{ github.event.inputs.save_new_accounts || 'false' }}  # 신규 계정명 저장
+      
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          else
+            pip install gspread google-auth google-auth-oauthlib google-auth-httplib2
+            pip install opendartreader pandas openpyxl playwright requests tqdm
+          fi
+          
+          # Playwright 브라우저 설치
+          echo "🌐 Playwright 브라우저 설치..."
+          playwright install chromium
+          playwright install-deps chromium
+          
+      - name: Verify environment
+        run: |
+          echo "🔍 환경 확인"
+          echo "🏢 대상 기업: $COMPANY_NAME ($COMPANY_CORP_CODE)"
+          echo "📅 날짜 범위: $([ "$CUSTOM_DATE_RANGE" = "true" ] && echo "$MANUAL_START_DATE ~ $MANUAL_END_DATE" || echo "최근 3개월")"
+          echo "🔧 디버그 모드: $DEBUG_MODE"
+          echo "💰 숫자 단위: $NUMBER_UNIT"
+          echo "📝 신규 계정명 저장: $SAVE_NEW_ACCOUNTS"
+          
+      - name: Run DART Excel downloader
+        id: download
+        run: |
+          echo "🚀 DART Excel 다운로드 시작..."
+          
+          # 단위 표시
+          case "$NUMBER_UNIT" in
+            "million") echo "💰 단위: 백만원" ;;
+            "hundred_million") echo "💰 단위: 억원" ;;
+            "billion") echo "💰 단위: 십억원" ;;
+          esac
+          
+          if [ "$DEBUG_MODE" = "true" ]; then
+            python -u Dart_update.py
+          else
+            python Dart_update.py
+          fi
+          
+          # 실행 결과 확인
+          if [ $? -eq 0 ]; then
+            echo "✅ 다운로드 완료"
+            echo "success=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ 다운로드 실패"
+            echo "success=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+        continue-on-error: true
+        
+      - name: Upload logs and new accounts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dart-logs-${{ github.run_number }}
+          path: |
+            *.log
+            new_accounts_*.txt
+          retention-days: 30
+          
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 📊 DART Excel 다운로드 결과" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| 항목 | 값 |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-----|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🏢 회사 | $COMPANY_NAME ($COMPANY_CORP_CODE) |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📅 실행 시간 | $(date '+%Y-%m-%d %H:%M:%S') |" >> $GITHUB_STEP_SUMMARY
+          echo "| 💰 숫자 단위 | $NUMBER_UNIT |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📝 신규 계정명 저장 | $SAVE_NEW_ACCOUNTS |" >> $GITHUB_STEP_SUMMARY
+          echo "| ✅ 성공 여부 | ${{ steps.download.outputs.success || 'false' }} |" >> $GITHUB_STEP_SUMMARY
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: download-dart-excel
+    if: always()
+    
+    steps:
+      - name: Send notification
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          NUMBER_UNIT: ${{ github.event.inputs.number_unit || 'million' }}
+        run: |
+          if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHANNEL_ID" ]; then
+            STATUS_EMOJI=$([ "${{ needs.download-dart-excel.result }}" = "success" ] && echo "✅" || echo "❌")
+            STATUS_TEXT=$([ "${{ needs.download-dart-excel.result }}" = "success" ] && echo "성공" || echo "실패")
+            
+            # 단위 텍스트 변환
+            case "$NUMBER_UNIT" in
+              "million") UNIT_TEXT="백만원" ;;
+              "hundred_million") UNIT_TEXT="억원" ;;
+              "billion") UNIT_TEXT="십억원" ;;
+              *) UNIT_TEXT="백만원" ;;
+            esac
+            
+            MESSAGE="🤖 DART Excel 다운로드 $STATUS_TEXT
+            
+            📊 현대오토에버 (307950)
+            📅 $(date '+%Y-%m-%d %H:%M:%S')
+            💰 단위: $UNIT_TEXT
+            🔗 ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TELEGRAM_CHANNEL_ID}" \
+              -d "text=${MESSAGE}"
+          fi
