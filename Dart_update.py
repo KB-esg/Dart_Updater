@@ -470,15 +470,15 @@ class DartDualUpdater:
         return None
 
     def _update_html_worksheet(self, sheet_name, url):
-        """HTML 워크시트 업데이트 (개선된 재시도 로직)"""
-        max_retries = 3
-        retry_delay = 5
+        """HTML 워크시트 업데이트 (향상된 연결 안정성)"""
+        max_retries = 5  # 재시도 횟수 증가
+        retry_delay = 3
         
         for attempt in range(max_retries):
             try:
                 print(f"📄 처리 중: {sheet_name} (시도 {attempt + 1}/{max_retries})")
                 
-                # 워크시트 가져오기 또는 생성 (재시도 로직 적용)
+                # 워크시트 가져오기 또는 생성 (재시도 적용)
                 try:
                     worksheet = self._execute_sheets_operation_with_retry(
                         self.workbook.worksheet, sheet_name
@@ -490,42 +490,83 @@ class DartDualUpdater:
                     print(f"🆕 새 시트 생성: {sheet_name}")
                     time.sleep(2)
                 
-                # HTML 내용 가져오기 (향상된 요청 처리)
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                # 향상된 HTTP 요청 처리
+                session = requests.Session()
+                session.headers.update({
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                     'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5,en;q=0.3',
                     'Accept-Encoding': 'gzip, deflate, br',
-                    'Connection': 'keep-alive'
-                }
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none'
+                })
                 
-                response = requests.get(url, headers=headers, timeout=30)
-                response.raise_for_status()  # HTTP 오류 발생시 예외 발생
+                # 연결 풀 설정
+                adapter = requests.adapters.HTTPAdapter(
+                    pool_connections=1, 
+                    pool_maxsize=1,
+                    max_retries=requests.adapters.Retry(
+                        total=3,
+                        backoff_factor=1,
+                        status_forcelist=[500, 502, 503, 504]
+                    )
+                )
+                session.mount('http://', adapter)
+                session.mount('https://', adapter)
                 
-                if response.status_code == 200:
-                    self._process_html_content(worksheet, response.text)
-                    print(f"✅ HTML 시트 업데이트 완료: {sheet_name}")
-                    self.results['html']['processed_sheets'].append(sheet_name)
-                    return  # 성공시 함수 종료
-                else:
-                    print(f"⚠️ HTTP {response.status_code}: {sheet_name}")
+                try:
+                    response = session.get(url, timeout=45, stream=False)
+                    response.raise_for_status()
                     
-            except requests.exceptions.RequestException as e:
-                print(f"⚠️ 요청 오류 (시도 {attempt + 1}/{max_retries}): {sheet_name} - {str(e)}")
+                    if response.status_code == 200 and response.content:
+                        # Content-Length 확인
+                        content_length = len(response.content)
+                        print(f"📥 콘텐츠 크기: {content_length:,} bytes")
+                        
+                        if content_length < 100:
+                            print(f"⚠️ 콘텐츠가 너무 작습니다: {content_length} bytes")
+                            if attempt < max_retries - 1:
+                                time.sleep(retry_delay)
+                                retry_delay *= 1.5
+                                continue
+                        
+                        self._process_html_content(worksheet, response.text)
+                        print(f"✅ HTML 시트 업데이트 완료: {sheet_name}")
+                        self.results['html']['processed_sheets'].append(sheet_name)
+                        return  # 성공시 함수 종료
+                    else:
+                        print(f"⚠️ HTTP {response.status_code}: {sheet_name}")
+                        
+                except requests.exceptions.Timeout:
+                    print(f"⚠️ 타임아웃 (시도 {attempt + 1}/{max_retries}): {sheet_name}")
+                except requests.exceptions.ConnectionError as e:
+                    print(f"⚠️ 연결 오류 (시도 {attempt + 1}/{max_retries}): {sheet_name} - {str(e)}")
+                except requests.exceptions.SSLError as e:
+                    print(f"⚠️ SSL 오류 (시도 {attempt + 1}/{max_retries}): {sheet_name} - {str(e)}")
+                except requests.exceptions.RequestException as e:
+                    print(f"⚠️ 요청 오류 (시도 {attempt + 1}/{max_retries}): {sheet_name} - {str(e)}")
+                finally:
+                    session.close()
+                
                 if attempt < max_retries - 1:
-                    print(f"⏳ {retry_delay}초 후 재시도...")
+                    print(f"⏳ {retry_delay:.1f}초 후 재시도...")
                     time.sleep(retry_delay)
-                    retry_delay *= 2  # 지수 백오프
+                    retry_delay *= 1.5  # 점진적 대기 시간 증가
                 else:
                     print(f"❌ 최종 실패: {sheet_name}")
                     self.results['html']['failed_sheets'].append(sheet_name)
+                    
             except gspread.exceptions.APIError as e:
                 print(f"❌ Google Sheets API 오류 ({sheet_name}): {str(e)}")
                 self.results['html']['failed_sheets'].append(sheet_name)
                 return
             except Exception as e:
                 print(f"❌ HTML 워크시트 업데이트 실패 ({sheet_name}): {str(e)}")
-                self.results['html']['failed_sheets'].append(sheet_name)
+                if attempt == max_retries - 1:
+                    self.results['html']['failed_sheets'].append(sheet_name)
                 return
 
     def _process_html_content(self, worksheet, html_content):
@@ -634,28 +675,6 @@ class DartDualUpdater:
             
         except Exception as e:
             print(f"❌ 현재 문서 HTML Archive 업데이트 실패: {str(e)}")
-
-    def _process_archive_data_improved(self, archive, start_row, last_col):
-        """아카이브 데이터 처리 (개선된 키워드 검색 로직)"""
-        try:
-            current_cols = archive.col_count
-            current_col_letter = self._get_column_letter(current_cols)
-            target_col_letter = self._get_column_letter(last_col)
-            
-            print(f"시작 행: {start_row}, 대상 열: {last_col} ({target_col_letter})")
-            print(f"현재 시트 열 수: {current_cols} ({current_col_letter})")
-            
-            # 필요한 경우 시트 크기 조정
-            if last_col >= current_cols:
-                new_cols = last_col + 5
-                try:
-                    print(f"시트 크기를 {current_cols}({current_col_letter})에서 {new_cols}({self._get_column_letter(new_cols)})로 조정합니다.")
-                    archive.resize(rows=archive.row_count, cols=new_cols)
-                    time.sleep(2)
-                    print("시트 크기 조정 완료")
-                except Exception as e:
-                    print(f"시트 크기 조정 중 오류 발생: {str(e)}")
-                    raise
 
     def _process_archive_data_improved(self, archive, start_row, last_col):
         """아카이브 데이터 처리 (배치 업데이트로 성능 개선)"""
@@ -864,18 +883,6 @@ class DartDualUpdater:
             
         except Exception as e:
             error_msg = f"배치 업데이트 중 오류 발생: {str(e)}"
-            print(error_msg)
-            self._send_telegram_message(f"❌ {error_msg}")
-            raise e
-                    
-                except Exception as e:
-                    error_msg = f"업데이트 중 오류 발생: {str(e)}"
-                    print(error_msg)
-                    self._send_telegram_message(f"❌ {error_msg}")
-                    raise e
-                    
-        except Exception as e:
-            error_msg = f"아카이브 처리 중 오류 발생: {str(e)}"
             print(error_msg)
             self._send_telegram_message(f"❌ {error_msg}")
             raise e
