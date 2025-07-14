@@ -1,9 +1,9 @@
-name: DART Excel Download
+name: 01_SDS_DART_handler
 
 on:
   schedule:
-    - cron: '15 0 31 3 *'        # 3월 31일 오전 9시 15분 (UTC+9)
-    - cron: '15 0 17 5,8,11 *'   # 5월, 8월, 11월 17일 오전 9시 15분 (UTC+9)
+    - cron: '0 0 31 3 *'        # 3월 31일 오전 9시 15분 (UTC+9)
+    - cron: '0 0 17 5,8,11 *'   # 5월, 8월, 11월 17일 오전 9시 15분 (UTC+9)
   workflow_dispatch:             # 수동 실행 가능
     inputs:
       debug_mode:
