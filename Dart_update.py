@@ -351,12 +351,15 @@ class DartDualUpdater:
 
     # === HTML 스크래핑 관련 메서드 ===
     def _process_html_report(self, rcept_no):
-        """HTML 보고서 처리"""
+        """HTML 보고서 처리 (개선된 오류 처리)"""
         try:
             print(f"\n🌐 HTML 처리: 보고서 접수번호 {rcept_no}")
             
-            # 보고서 하위 문서 목록 조회
-            report_index = self.dart.sub_docs(rcept_no)
+            # 보고서 하위 문서 목록 조회 (재시도 로직 포함)
+            report_index = self._get_report_index_with_retry(rcept_no)
+            if report_index is None or report_index.empty:
+                print("⚠️ 보고서 하위 문서를 찾을 수 없습니다.")
+                return
             
             # HTML 대상 시트만 필터링 (재무제표 관련 제외)
             target_docs = report_index[report_index['title'].isin(self.HTML_TARGET_SHEETS)]
@@ -365,26 +368,59 @@ class DartDualUpdater:
             
             for _, doc in target_docs.iterrows():
                 self._update_html_worksheet(doc['title'], doc['url'])
+                time.sleep(1)  # 각 문서 간 대기
                 
         except Exception as e:
             print(f"❌ HTML 보고서 처리 실패: {str(e)}")
 
+    def _get_report_index_with_retry(self, rcept_no, max_retries=3):
+        """보고서 인덱스 조회 (재시도 포함)"""
+        for attempt in range(max_retries):
+            try:
+                report_index = self.dart.sub_docs(rcept_no)
+                if report_index is not None and not report_index.empty:
+                    return report_index
+                else:
+                    print(f"⚠️ 시도 {attempt + 1}: 보고서 인덱스가 비어있음")
+            except Exception as e:
+                print(f"⚠️ 시도 {attempt + 1}: 보고서 인덱스 조회 실패 - {str(e)}")
+                
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 5
+                print(f"⏳ {wait_time}초 후 재시도...")
+                time.sleep(wait_time)
+        
+        return None
+
     def _update_html_worksheet(self, sheet_name, url):
-        """HTML 워크시트 업데이트 (재시도 로직 포함)"""
+        """HTML 워크시트 업데이트 (개선된 재시도 로직)"""
         max_retries = 3
         retry_delay = 5
         
         for attempt in range(max_retries):
             try:
+                print(f"📄 처리 중: {sheet_name} (시도 {attempt + 1}/{max_retries})")
+                
                 # 워크시트 가져오기 또는 생성
                 try:
                     worksheet = self.workbook.worksheet(sheet_name)
                 except gspread.exceptions.WorksheetNotFound:
                     worksheet = self.workbook.add_worksheet(sheet_name, 1000, 10)
                     print(f"🆕 새 시트 생성: {sheet_name}")
+                    time.sleep(2)
                 
-                # HTML 내용 가져오기 (재시도 로직)
-                response = requests.get(url, timeout=30)
+                # HTML 내용 가져오기 (향상된 요청 처리)
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'ko-KR,ko;q=0.8,en-US;q=0.5,en;q=0.3',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive'
+                }
+                
+                response = requests.get(url, headers=headers, timeout=30)
+                response.raise_for_status()  # HTTP 오류 발생시 예외 발생
+                
                 if response.status_code == 200:
                     self._process_html_content(worksheet, response.text)
                     print(f"✅ HTML 시트 업데이트 완료: {sheet_name}")
@@ -393,10 +429,8 @@ class DartDualUpdater:
                 else:
                     print(f"⚠️ HTTP {response.status_code}: {sheet_name}")
                     
-            except (requests.exceptions.ConnectionError, 
-                    requests.exceptions.SSLError, 
-                    requests.exceptions.Timeout) as e:
-                print(f"⚠️ 연결 오류 (시도 {attempt + 1}/{max_retries}): {sheet_name} - {str(e)}")
+            except requests.exceptions.RequestException as e:
+                print(f"⚠️ 요청 오류 (시도 {attempt + 1}/{max_retries}): {sheet_name} - {str(e)}")
                 if attempt < max_retries - 1:
                     print(f"⏳ {retry_delay}초 후 재시도...")
                     time.sleep(retry_delay)
@@ -404,6 +438,15 @@ class DartDualUpdater:
                 else:
                     print(f"❌ 최종 실패: {sheet_name}")
                     self.results['html']['failed_sheets'].append(sheet_name)
+            except gspread.exceptions.APIError as e:
+                if 'Quota exceeded' in str(e):
+                    print(f"⏳ Google Sheets API 할당량 초과. 60초 대기...")
+                    time.sleep(60)
+                    continue
+                else:
+                    print(f"❌ Google Sheets API 오류 ({sheet_name}): {str(e)}")
+                    self.results['html']['failed_sheets'].append(sheet_name)
+                    return
             except Exception as e:
                 print(f"❌ HTML 워크시트 업데이트 실패 ({sheet_name}): {str(e)}")
                 self.results['html']['failed_sheets'].append(sheet_name)
@@ -417,31 +460,48 @@ class DartDualUpdater:
         worksheet.clear()
         all_data = []
         
+        # 메타데이터 추가
+        meta_data = [
+            [f"업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"],
+            [f"보고서: {self.current_report.get('rcept_no', '') if self.current_report else ''}"],
+            [f"회사: {self.company_name}"],
+            []
+        ]
+        all_data.extend(meta_data)
+        
         for table in tables:
             table_data = parser.make2d(table)
             if table_data:
                 all_data.extend(table_data)
+                all_data.append([])  # 테이블 간 구분을 위한 빈 행
         
-        # 배치 업데이트
-        BATCH_SIZE = 100
-        for i in range(0, len(all_data), BATCH_SIZE):
-            batch = all_data[i:i + BATCH_SIZE]
-            try:
-                worksheet.append_rows(batch)
-                time.sleep(1)  # API 제한 회피
-            except gspread.exceptions.APIError as e:
-                if 'Quota exceeded' in str(e):
-                    print("⏳ 할당량 제한. 60초 대기...")
-                    time.sleep(60)
-                    worksheet.append_rows(batch)
-                else:
-                    raise e
+        # 배치 업데이트 (성능 개선)
+        if all_data:
+            BATCH_SIZE = 500  # 배치 크기 증가
+            for i in range(0, len(all_data), BATCH_SIZE):
+                batch = all_data[i:i + BATCH_SIZE]
+                try:
+                    # 한 번에 업데이트
+                    end_row = i + len(batch)
+                    end_col = max(len(row) for row in batch) if batch else 1
+                    end_col_letter = self._get_column_letter(end_col - 1)
+                    range_name = f'A{i+1}:{end_col_letter}{end_row}'
+                    
+                    worksheet.update(values=batch, range_name=range_name)
+                    time.sleep(2)  # API 제한 회피
+                except gspread.exceptions.APIError as e:
+                    if 'Quota exceeded' in str(e):
+                        print("⏳ 할당량 제한. 60초 대기...")
+                        time.sleep(60)
+                        worksheet.update(values=batch, range_name=range_name)
+                    else:
+                        raise e
 
-    def _update_html_archive(self):
-        """HTML Archive 시트 업데이트"""
+    def _update_html_archive_for_current_report(self):
+        """현재 보고서의 HTML Archive 업데이트 (개선된 키워드 검색)"""
+        print("📊 현재 문서 HTML Archive 업데이트 중...")
+        
         try:
-            print("\n📊 HTML Archive 시트 업데이트 시작...")
-            
             # Dart_Archive 시트 접근
             archive = self.workbook.worksheet('Dart_Archive')
             sheet_values = archive.get_all_values()
@@ -453,19 +513,17 @@ class DartDualUpdater:
             last_col = len(sheet_values[0])
             control_value = archive.cell(1, last_col).value
             
-            # control_value에 따라 열 조정
             if control_value:
                 last_col += 1
             
-            # 아카이브 데이터 처리
-            self._process_archive_data(archive, 10, last_col)
-            print("✅ HTML Archive 업데이트 완료")
+            self._process_archive_data_improved(archive, 10, last_col)
+            print("✅ 현재 문서 HTML Archive 업데이트 완료")
             
         except Exception as e:
-            print(f"❌ HTML Archive 업데이트 실패: {str(e)}")
+            print(f"❌ 현재 문서 HTML Archive 업데이트 실패: {str(e)}")
 
-    def _process_archive_data(self, archive, start_row, last_col):
-        """아카이브 데이터 처리 (HTML 스크래핑용)"""
+    def _process_archive_data_improved(self, archive, start_row, last_col):
+        """아카이브 데이터 처리 (개선된 키워드 검색 로직)"""
         try:
             current_cols = archive.col_count
             current_col_letter = self._get_column_letter(current_cols)
@@ -494,17 +552,11 @@ class DartDualUpdater:
             sheet_rows = {}
             for row_idx in range(start_row - 1, len(all_rows)):
                 if len(all_rows[row_idx]) < 5:
-                    print(f"행 {row_idx + 1}: 데이터 부족 (컬럼 수: {len(all_rows[row_idx])})")
                     continue
                     
                 sheet_name = all_rows[row_idx][0]
                 if not sheet_name:
-                    print(f"행 {row_idx + 1}: 시트명 없음")
                     continue
-                
-                print(f"행 {row_idx + 1} 처리: 시트={sheet_name}, " + 
-                      f"키워드={all_rows[row_idx][1]}, n={all_rows[row_idx][2]}, " +
-                      f"x={all_rows[row_idx][3]}, y={all_rows[row_idx][4]}")
                 
                 if sheet_name not in sheet_rows:
                     sheet_rows[sheet_name] = []
@@ -522,18 +574,21 @@ class DartDualUpdater:
                     print(f"검색할 키워드 수: {len(rows)}")
                     
                     if sheet_name not in sheet_cache:
-                        search_sheet = self.workbook.worksheet(sheet_name)
-                        sheet_data = search_sheet.get_all_values()
-                        df = pd.DataFrame(sheet_data)
-                        sheet_cache[sheet_name] = df
-                        print(f"시트 '{sheet_name}' 데이터 로드 완료 (크기: {df.shape})")
+                        try:
+                            search_sheet = self.workbook.worksheet(sheet_name)
+                            sheet_data = search_sheet.get_all_values()
+                            df = pd.DataFrame(sheet_data)
+                            sheet_cache[sheet_name] = df
+                            print(f"시트 '{sheet_name}' 데이터 로드 완료 (크기: {df.shape})")
+                        except gspread.exceptions.WorksheetNotFound:
+                            print(f"⚠️ 시트 '{sheet_name}'를 찾을 수 없습니다. 건너뜁니다.")
+                            continue
                     
                     df = sheet_cache[sheet_name]
                     
                     for row in rows:
                         keyword = row['keyword']
                         if not keyword or not row['n'] or not row['x'] or not row['y']:
-                            print(f"행 {row['row_idx']}: 검색 정보 부족")
                             continue
                         
                         try:
@@ -541,13 +596,8 @@ class DartDualUpdater:
                             x = int(row['x'])
                             y = int(row['y'])
                             
-                            keyword_positions = []
-                            for idx, df_row in df.iterrows():
-                                for col_idx, value in enumerate(df_row):
-                                    if value == keyword:
-                                        keyword_positions.append((idx, col_idx))
-                            
-                            print(f"키워드 '{keyword}' 검색 결과: {len(keyword_positions)}개 발견")
+                            # 개선된 키워드 검색 (부분 일치도 포함)
+                            keyword_positions = self._find_keyword_positions_improved(df, keyword)
                             
                             if keyword_positions and len(keyword_positions) >= n:
                                 target_pos = keyword_positions[n - 1]
@@ -601,25 +651,22 @@ class DartDualUpdater:
                     
                     # 메타데이터 업데이트
                     today = datetime.now()
-                    three_months_ago = today - timedelta(days=90)
-                    year = str(three_months_ago.year)[2:]
-                    quarter = (three_months_ago.month - 1) // 3 + 1
-                    quarter_text = f"{quarter}Q{year}"
+                    quarter_info = self._get_quarter_info()
                     
                     meta_updates = [
                         {'range': 'J1', 'values': [[today.strftime('%Y-%m-%d')]]},
                         {'range': f'{target_col_letter}1', 'values': [['1']]},
                         {'range': f'{target_col_letter}5', 'values': [[today.strftime('%Y-%m-%d')]]},
-                        {'range': f'{target_col_letter}6', 'values': [[quarter_text]]}
+                        {'range': f'{target_col_letter}6', 'values': [[quarter_info]]}
                     ]
                     
                     archive.batch_update(meta_updates)
-                    print(f"최종 업데이트 완료 (이전 분기: {quarter_text})")
+                    print(f"최종 업데이트 완료 (분기: {quarter_info})")
                     
                     message = (
                         f"🔄 HTML Archive 업데이트 완료\n\n"
                         f"• 종목: {self.company_name} ({self.corp_code})\n"
-                        f"• 분기: {quarter_text}\n"
+                        f"• 분기: {quarter_info}\n"
                         f"• 업데이트 일시: {today.strftime('%Y-%m-%d %H:%M:%S')}\n"
                         f"• 처리된 행: {len(update_data)}개\n"
                         f"• 시트 열: {target_col_letter} (#{last_col})"
@@ -637,6 +684,36 @@ class DartDualUpdater:
             print(error_msg)
             self._send_telegram_message(f"❌ {error_msg}")
             raise e
+
+    def _find_keyword_positions_improved(self, df, keyword):
+        """개선된 키워드 검색 (완전 일치 우선, 부분 일치 보조)"""
+        positions = []
+        
+        # 1단계: 완전 일치 검색
+        for idx, df_row in df.iterrows():
+            for col_idx, value in enumerate(df_row):
+                if value and str(value).strip() == keyword:
+                    positions.append((idx, col_idx))
+        
+        # 2단계: 완전 일치가 없으면 부분 일치 검색
+        if not positions:
+            for idx, df_row in df.iterrows():
+                for col_idx, value in enumerate(df_row):
+                    if value and keyword in str(value):
+                        positions.append((idx, col_idx))
+        
+        # 3단계: 부분 일치도 없으면 유사 키워드 검색
+        if not positions:
+            # 공백, 특수문자 제거한 키워드로 검색
+            clean_keyword = re.sub(r'[\s\-\_]', '', keyword)
+            for idx, df_row in df.iterrows():
+                for col_idx, value in enumerate(df_row):
+                    if value:
+                        clean_value = re.sub(r'[\s\-\_]', '', str(value))
+                        if clean_keyword in clean_value or clean_value in clean_keyword:
+                            positions.append((idx, col_idx))
+        
+        return positions
 
     def _remove_parentheses(self, value):
         """괄호 내용 제거"""
@@ -803,47 +880,6 @@ class DartDualUpdater:
             
         except Exception as e:
             print(f"❌ 현재 문서 XBRL Archive 업데이트 실패: {str(e)}")
-
-    def _update_html_archive_for_current_report(self):
-        """현재 보고서의 HTML Archive 업데이트"""
-        print("📊 현재 문서 HTML Archive 업데이트 중...")
-        
-        try:
-            # Dart_Archive 시트 접근
-            archive = self.workbook.worksheet('Dart_Archive')
-            sheet_values = archive.get_all_values()
-            
-            if not sheet_values:
-                print("⚠️ Dart_Archive 시트가 비어있습니다")
-                return
-            
-            last_col = len(sheet_values[0])
-            control_value = archive.cell(1, last_col).value
-            
-            if control_value:
-                last_col += 1
-            
-            self._process_archive_data(archive, 10, last_col)
-            print("✅ 현재 문서 HTML Archive 업데이트 완료")
-            
-        except Exception as e:
-            print(f"❌ 현재 문서 HTML Archive 업데이트 실패: {str(e)}")
-
-    def _cleanup_current_downloads(self):
-        """현재 문서 다운로드 파일 정리"""
-        try:
-            if os.path.exists(self.download_dir):
-                for file in os.listdir(self.download_dir):
-                    file_path = os.path.join(self.download_dir, file)
-                    if os.path.isfile(file_path):
-                        os.remove(file_path)
-                print("🧹 현재 문서 파일 정리 완료")
-            
-            # Excel 파일 경로 초기화
-            self.results['xbrl']['excel_files'] = {}
-            
-        except Exception as e:
-            print(f"⚠️ 현재 문서 파일 정리 실패: {str(e)}")
 
     def _update_single_xbrl_archive(self, sheet_name, file_path, file_type):
         """개별 XBRL Archive 시트 업데이트"""
@@ -1701,6 +1737,22 @@ class DartDualUpdater:
             num, remainder = divmod(num - 1, 26)
             result = chr(65 + remainder) + result
         return result
+
+    def _cleanup_current_downloads(self):
+        """현재 문서 다운로드 파일 정리"""
+        try:
+            if os.path.exists(self.download_dir):
+                for file in os.listdir(self.download_dir):
+                    file_path = os.path.join(self.download_dir, file)
+                    if os.path.isfile(file_path):
+                        os.remove(file_path)
+                print("🧹 현재 문서 파일 정리 완료")
+            
+            # Excel 파일 경로 초기화
+            self.results['xbrl']['excel_files'] = {}
+            
+        except Exception as e:
+            print(f"⚠️ 현재 문서 파일 정리 실패: {str(e)}")
 
     def _send_telegram_message(self, message):
         """텔레그램 메시지 전송"""
