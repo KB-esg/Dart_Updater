@@ -422,9 +422,9 @@ class DartExcelDownloader:
                             end_col = max(len(row) for row in all_data) if all_data else 1
                             end_col_letter = self._get_column_letter(end_col - 1)
                             
-                            # 범위 지정하여 업데이트
+                            # 범위 지정하여 업데이트 (새로운 매개변수 순서: values, range_name)
                             range_name = f'A1:{end_col_letter}{end_row}'
-                            worksheet.update(range_name, all_data)
+                            worksheet.update(values=all_data, range_name=range_name)
                         
                         self.results['uploaded_sheets'].append(gsheet_name)
                         upload_count += 1
@@ -633,12 +633,12 @@ class DartExcelDownloader:
             for _ in range(3):
                 header_data.append(['', '', '', '', '', '', '', '', '', '', '', ''])
             
-            # 한 번에 업데이트 (L열까지만)
+            # 한 번에 업데이트 (L열까지만) - 새로운 매개변수 순서
             end_row = len(header_data)
             range_name = f'A1:L{end_row}'
             
             print(f"  📋 XBRL Archive 기본 헤더 설정: {range_name}")
-            sheet.update(range_name, header_data)
+            sheet.update(values=header_data, range_name=range_name)
             
             print(f"  ✅ XBRL Archive 기본 레이아웃 완료")
             print(f"      📁 파일타입: {'재무제표' if file_type == 'financial' else '재무제표주석'}")
@@ -729,24 +729,24 @@ class DartExcelDownloader:
             # STEP 4: 대용량 배치 업데이트
             print(f"  🚀 대용량 배치 업데이트 시작...")
             
-            # 배치 1: 헤더 정보 (분기정보와 날짜만)
+            # 배치 1: 헤더 정보 (분기정보와 날짜만) - 새로운 매개변수 순서
             header_range = f'{col_letter}1:{col_letter}2'
             header_data = [[quarter_info], [report_date]]
-            sheet.update(header_range, header_data)
+            sheet.update(values=header_data, range_name=header_range)
             print(f"    ✅ 헤더 정보 업데이트 완료")
             
-            # 배치 2: L열 계정명 대량 업데이트 (한 번에)
+            # 배치 2: L열 계정명 대량 업데이트 (한 번에) - 새로운 매개변수 순서
             if all_account_data:
                 account_range = f'L7:L{6 + len(all_account_data)}'
-                sheet.update(account_range, all_account_data)
+                sheet.update(values=all_account_data, range_name=account_range)
                 print(f"    ✅ L열 계정명 {len([row for row in all_account_data if row[0]])}개 업데이트 완료")
             
             time.sleep(2)  # API 제한 회피
             
-            # 배치 3: M열 값 대량 업데이트 (한 번에)
+            # 배치 3: M열 값 대량 업데이트 (한 번에) - 새로운 매개변수 순서
             if all_value_data:
                 value_range = f'{col_letter}7:{col_letter}{6 + len(all_value_data)}'
-                sheet.update(value_range, all_value_data)
+                sheet.update(values=all_value_data, range_name=value_range)
                 print(f"    ✅ {col_letter}열 값 {len([row for row in all_value_data if row[0]])}개 업데이트 완료")
             
             # STEP 5: 신규 계정명 목록을 별도로 저장 (옵션)
