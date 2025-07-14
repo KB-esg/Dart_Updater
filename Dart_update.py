@@ -8,7 +8,25 @@ from google.oauth2.service_account import Credentials
 import OpenDartReader
 import requests
 from bs4 import BeautifulSoup
-from html_table_parser import parser_functions as parser
+try:
+    from html_table_parser import parser_functions as parser
+except ImportError:
+    try:
+        import html_table_parser as parser
+    except ImportError:
+        # html_table_parser가 없는 경우 대체 함수 정의
+        class parser:
+            @staticmethod
+            def make2d(table):
+                """BeautifulSoup table을 2D 리스트로 변환하는 대체 함수"""
+                rows = []
+                for tr in table.find_all('tr'):
+                    row = []
+                    for td in tr.find_all(['td', 'th']):
+                        row.append(td.get_text(strip=True))
+                    if row:
+                        rows.append(row)
+                return rows
 import pandas as pd
 from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright
