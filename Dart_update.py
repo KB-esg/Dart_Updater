@@ -103,13 +103,13 @@ class DartDualUpdater:
         """Archive 시트의 행 영역 매핑 설정"""
         # 재무제표 Archive 시트 행 매핑
         self.financial_row_mapping = {
-            'connected': {
+            'consolidated': {
                 'D210000': {'start': 7, 'end': 80, 'name': '연결 재무상태표'},
                 'D431410': {'start': 81, 'end': 140, 'name': '연결 손익계산서'},
                 'D520000': {'start': 141, 'end': 200, 'name': '연결 현금흐름표'},
                 'D610000': {'start': 201, 'end': 250, 'name': '연결 자본변동표'}
             },
-            'separate': {
+            'standalone': {
                 'D210005': {'start': 257, 'end': 330, 'name': '별도 재무상태표'},
                 'D431415': {'start': 331, 'end': 390, 'name': '별도 손익계산서'},
                 'D520005': {'start': 391, 'end': 450, 'name': '별도 현금흐름표'},
@@ -731,11 +731,11 @@ class DartDualUpdater:
                 # 주석 데이터 수정된 메서드 적용
                 self._update_single_xbrl_archive('Dart_Archive_XBRL_주석_연결', 
                                                self.results['xbrl']['excel_files']['notes'], 
-                                               'notes_connected')
+                                               'notes_consolidated')
                 
                 self._update_single_xbrl_archive('Dart_Archive_XBRL_주석_별도', 
                                                self.results['xbrl']['excel_files']['notes'], 
-                                               'notes_separate')
+                                               'notes_standalone')
             
             print("✅ XBRL Archive 업데이트 완료")
             
@@ -775,10 +775,10 @@ class DartDualUpdater:
             # 데이터 추출 및 업데이트
             if file_type == 'financial':
                 self._update_xbrl_financial_archive_batch(archive_sheet, wb, last_col)
-            elif file_type == 'notes_connected':
-                self._update_xbrl_notes_archive_batch(archive_sheet, wb, last_col, 'connected')
-            elif file_type == 'notes_separate':
-                self._update_xbrl_notes_archive_batch(archive_sheet, wb, last_col, 'separate')
+            elif file_type == 'notes_consolidated':
+                self._update_xbrl_notes_archive_batch(archive_sheet, wb, last_col, 'consolidated')
+            elif file_type == 'notes_standalone':
+                self._update_xbrl_notes_archive_batch(archive_sheet, wb, last_col, 'standalone')
                 
         except Exception as e:
             print(f"❌ {sheet_name} 업데이트 실패: {str(e)}")
@@ -1022,7 +1022,7 @@ class DartDualUpdater:
         except:
             return None
 
-    def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index, notes_type='connected'):
+    def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index, notes_type='consolidated'):
         """XBRL 재무제표주석 Archive 업데이트"""
         try:
             print(f"  📝 XBRL 주석 데이터 분석 중... ({notes_type})")
@@ -1135,12 +1135,12 @@ class DartDualUpdater:
             is_target_sheet = False
             
             # 주석 시트 명명 규칙 체크: D8/U8로 시작하고 연결(0)/별도(5)로 끝남
-            if notes_type == 'connected':
+            if notes_type == 'consolidated':
                 # 연결: D8xxx0 또는 U8xxx0
                 if (sheet_name.startswith('D8') or sheet_name.startswith('U8')) and sheet_name.endswith('0'):
                     is_target_sheet = True
                     print(f"      ✅ 연결 주석 시트 발견: {sheet_name}")
-            else:  # separate
+            else:  # standalone
                 # 별도: D8xxx5 또는 U8xxx5
                 if (sheet_name.startswith('D8') or sheet_name.startswith('U8')) and sheet_name.endswith('5'):
                     is_target_sheet = True
@@ -1153,7 +1153,7 @@ class DartDualUpdater:
                     worksheet = wb[sheet_name]
                     sheet_title = self._get_sheet_title(worksheet)
                     
-                    if notes_type == 'connected':
+                    if notes_type == 'consolidated':
                         if '연결' in sheet_title or ('별도' not in sheet_title and not sheet_name.endswith('5')):
                             is_target_sheet = True
                             print(f"      ✅ 내용 기반 연결 주석 시트: {sheet_name}")
