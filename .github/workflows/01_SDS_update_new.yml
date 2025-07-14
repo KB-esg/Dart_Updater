@@ -54,10 +54,10 @@ jobs:
       TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
       
       # 회사 정보 (여러 회사 처리 시 matrix 사용 권장)
-      COMPANY_CORP_CODE: '307950'
-      COMPANY_NAME: '현대오토에버'
+      COMPANY_CORP_CODE: '018260'
+      COMPANY_NAME: '삼성SDS'
       COMPANY_SPREADSHEET_VAR: 'SDS_SPREADSHEET_ID'
-      AUTOEVER_SPREADSHEET_ID: ${{ secrets.SDS_SPREADSHEET_ID }}
+      SDS_SPREADSHEET_ID: ${{ secrets.SDS_SPREADSHEET_ID }}
       
       # 실행 옵션
       DEBUG_MODE: ${{ github.event.inputs.debug_mode || 'false' }}
