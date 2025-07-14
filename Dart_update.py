@@ -12,10 +12,32 @@ try:
     from html_table_parser import parser_functions as parser
 except ImportError:
     try:
-        import html_table_parser as parser
+        import html_table_parser
+        # html_table_parser가 있지만 make2d가 없는 경우 직접 구현
+        class TableParser:
+            @staticmethod
+            def make2d(table):
+                """BeautifulSoup table을 2D 리스트로 변환"""
+                rows = []
+                for tr in table.find_all('tr'):
+                    row = []
+                    for td in tr.find_all(['td', 'th']):
+                        # colspan과 rowspan 처리
+                        colspan = int(td.get('colspan', 1))
+                        text = td.get_text(strip=True)
+                        
+                        # colspan만큼 반복
+                        for _ in range(colspan):
+                            row.append(text)
+                    if row:
+                        rows.append(row)
+                return rows
+        
+        parser = TableParser()
+        
     except ImportError:
-        # html_table_parser가 없는 경우 대체 함수 정의
-        class parser:
+        # html_table_parser가 완전히 없는 경우
+        class TableParser:
             @staticmethod
             def make2d(table):
                 """BeautifulSoup table을 2D 리스트로 변환하는 대체 함수"""
@@ -27,6 +49,8 @@ except ImportError:
                     if row:
                         rows.append(row)
                 return rows
+        
+        parser = TableParser()
 import pandas as pd
 from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright
@@ -134,9 +158,9 @@ class DartDualUpdater:
         }
 
     def run(self):
-        """메인 실행 함수 (XBRL + HTML 통합)"""
+        """메인 실행 함수 (문서별 순차 처리)"""
         print(f"\n🚀 {self.company_name}({self.corp_code}) DART 통합 업데이트 시작")
-        print("📊 업데이트 모드: XBRL Excel + HTML 스크래핑")
+        print("📊 업데이트 모드: 문서별 XBRL → Archive → HTML → Archive 순서")
         
         # 단위 정보 출력
         number_unit = os.environ.get('NUMBER_UNIT', 'million')
@@ -156,12 +180,7 @@ class DartDualUpdater:
         print(f"📋 발견된 보고서: {len(reports)}개")
         self.results['total_reports'] = len(reports)
         
-        # 2. 각 보고서에 대해 XBRL과 HTML 처리 병행
-        print("\n" + "="*50)
-        print("📄 XBRL Excel 다운로드 시작")
-        print("="*50)
-        
-        # XBRL 처리 (Playwright 사용)
+        # 2. 문서별로 순차 처리 (XBRL → XBRL Archive → HTML → HTML Archive)
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=True,
@@ -180,35 +199,47 @@ class DartDualUpdater:
             )
             
             try:
-                with tqdm(total=len(reports), desc="XBRL 처리", unit="건") as pbar:
+                with tqdm(total=len(reports), desc="문서별 처리", unit="건") as pbar:
                     for _, report in reports.iterrows():
+                        print(f"\n{'='*60}")
+                        print(f"📄 문서 처리 시작: {report['report_nm']} (접수번호: {report['rcept_no']})")
+                        print(f"{'='*60}")
+                        
+                        # Step 1: XBRL Excel 다운로드
+                        print("\n🔸 Step 1: XBRL Excel 다운로드")
                         self._process_xbrl_report(context, report)
+                        
+                        # Step 2: XBRL Archive 업데이트 (방금 다운로드한 파일)
+                        if self.results['xbrl']['excel_files']:
+                            print("\n🔸 Step 2: XBRL Archive 업데이트")
+                            if os.environ.get('ENABLE_ARCHIVE_UPDATE', 'true').lower() == 'true':
+                                self._update_xbrl_archive_for_current_report()
+                        
+                        # Step 3: HTML 스크래핑
+                        print("\n🔸 Step 3: HTML 스크래핑")
+                        self._process_html_report(report['rcept_no'])
+                        
+                        # Step 4: HTML Archive 업데이트
+                        print("\n🔸 Step 4: HTML Archive 업데이트")
+                        if os.environ.get('ENABLE_HTML_ARCHIVE', 'true').lower() == 'true':
+                            self._update_html_archive_for_current_report()
+                        
+                        # 파일 정리 (다음 문서 처리 전)
+                        self._cleanup_current_downloads()
+                        
+                        print(f"✅ 문서 처리 완료: {report['rcept_no']}")
                         pbar.update(1)
+                        
+                        # 문서 간 대기 (API 제한 회피)
+                        time.sleep(3)
+                    
             finally:
                 browser.close()
         
-        # 3. HTML 스크래핑 처리
-        print("\n" + "="*50)
-        print("🌐 HTML 스크래핑 시작")
-        print("="*50)
-        
-        with tqdm(total=len(reports), desc="HTML 처리", unit="건") as pbar:
-            for _, report in reports.iterrows():
-                self._process_html_report(report['rcept_no'])
-                pbar.update(1)
-        
-        # 4. XBRL Archive 업데이트
-        if os.environ.get('ENABLE_ARCHIVE_UPDATE', 'true').lower() == 'true':
-            self._update_xbrl_archive()
-        
-        # 5. HTML Archive 업데이트
-        if os.environ.get('ENABLE_HTML_ARCHIVE', 'true').lower() == 'true':
-            self._update_html_archive()
-        
-        # 6. 결과 요약
+        # 5. 결과 요약
         self._print_summary()
         
-        # 7. 다운로드 폴더 정리
+        # 6. 최종 정리
         self._cleanup_downloads()
 
     def _get_recent_reports(self):
@@ -339,28 +370,44 @@ class DartDualUpdater:
             print(f"❌ HTML 보고서 처리 실패: {str(e)}")
 
     def _update_html_worksheet(self, sheet_name, url):
-        """HTML 워크시트 업데이트"""
-        try:
-            # 워크시트 가져오기 또는 생성
+        """HTML 워크시트 업데이트 (재시도 로직 포함)"""
+        max_retries = 3
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
             try:
-                worksheet = self.workbook.worksheet(sheet_name)
-            except gspread.exceptions.WorksheetNotFound:
-                worksheet = self.workbook.add_worksheet(sheet_name, 1000, 10)
-                print(f"🆕 새 시트 생성: {sheet_name}")
-            
-            # HTML 내용 가져오기
-            response = requests.get(url)
-            if response.status_code == 200:
-                self._process_html_content(worksheet, response.text)
-                print(f"✅ HTML 시트 업데이트 완료: {sheet_name}")
-                self.results['html']['processed_sheets'].append(sheet_name)
-            else:
-                print(f"❌ HTML 가져오기 실패: {sheet_name}")
-                self.results['html']['failed_sheets'].append(sheet_name)
+                # 워크시트 가져오기 또는 생성
+                try:
+                    worksheet = self.workbook.worksheet(sheet_name)
+                except gspread.exceptions.WorksheetNotFound:
+                    worksheet = self.workbook.add_worksheet(sheet_name, 1000, 10)
+                    print(f"🆕 새 시트 생성: {sheet_name}")
                 
-        except Exception as e:
-            print(f"❌ HTML 워크시트 업데이트 실패 ({sheet_name}): {str(e)}")
-            self.results['html']['failed_sheets'].append(sheet_name)
+                # HTML 내용 가져오기 (재시도 로직)
+                response = requests.get(url, timeout=30)
+                if response.status_code == 200:
+                    self._process_html_content(worksheet, response.text)
+                    print(f"✅ HTML 시트 업데이트 완료: {sheet_name}")
+                    self.results['html']['processed_sheets'].append(sheet_name)
+                    return  # 성공시 함수 종료
+                else:
+                    print(f"⚠️ HTTP {response.status_code}: {sheet_name}")
+                    
+            except (requests.exceptions.ConnectionError, 
+                    requests.exceptions.SSLError, 
+                    requests.exceptions.Timeout) as e:
+                print(f"⚠️ 연결 오류 (시도 {attempt + 1}/{max_retries}): {sheet_name} - {str(e)}")
+                if attempt < max_retries - 1:
+                    print(f"⏳ {retry_delay}초 후 재시도...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # 지수 백오프
+                else:
+                    print(f"❌ 최종 실패: {sheet_name}")
+                    self.results['html']['failed_sheets'].append(sheet_name)
+            except Exception as e:
+                print(f"❌ HTML 워크시트 업데이트 실패 ({sheet_name}): {str(e)}")
+                self.results['html']['failed_sheets'].append(sheet_name)
+                return
 
     def _process_html_content(self, worksheet, html_content):
         """HTML 내용 처리 및 워크시트 업데이트"""
@@ -730,21 +777,20 @@ class DartDualUpdater:
         except Exception as e:
             print(f"❌ 배치 업로드 실패: {str(e)}")
 
-    def _update_xbrl_archive(self):
-        """XBRL Archive 시트 업데이트"""
-        print("\n📊 XBRL Archive 시트 업데이트 시작...")
+    def _update_xbrl_archive_for_current_report(self):
+        """현재 보고서의 XBRL Archive 업데이트"""
+        print("📊 현재 문서 XBRL Archive 업데이트 중...")
         
         try:
             if 'financial' in self.results['xbrl']['excel_files']:
-                print("📈 XBRL 재무제표 Archive 업데이트 중...")
+                print("📈 재무제표 Archive 업데이트...")
                 self._update_single_xbrl_archive('Dart_Archive_XBRL_재무제표', 
                                                self.results['xbrl']['excel_files']['financial'], 
                                                'financial')
             
             if 'notes' in self.results['xbrl']['excel_files']:
-                print("📝 XBRL 재무제표주석 Archive 업데이트 중...")
+                print("📝 주석 Archive 업데이트...")
                 
-                # 주석 데이터 수정된 메서드 적용
                 self._update_single_xbrl_archive('Dart_Archive_XBRL_주석_연결', 
                                                self.results['xbrl']['excel_files']['notes'], 
                                                'notes_consolidated')
@@ -753,10 +799,51 @@ class DartDualUpdater:
                                                self.results['xbrl']['excel_files']['notes'], 
                                                'notes_standalone')
             
-            print("✅ XBRL Archive 업데이트 완료")
+            print("✅ 현재 문서 XBRL Archive 업데이트 완료")
             
         except Exception as e:
-            print(f"❌ XBRL Archive 업데이트 실패: {str(e)}")
+            print(f"❌ 현재 문서 XBRL Archive 업데이트 실패: {str(e)}")
+
+    def _update_html_archive_for_current_report(self):
+        """현재 보고서의 HTML Archive 업데이트"""
+        print("📊 현재 문서 HTML Archive 업데이트 중...")
+        
+        try:
+            # Dart_Archive 시트 접근
+            archive = self.workbook.worksheet('Dart_Archive')
+            sheet_values = archive.get_all_values()
+            
+            if not sheet_values:
+                print("⚠️ Dart_Archive 시트가 비어있습니다")
+                return
+            
+            last_col = len(sheet_values[0])
+            control_value = archive.cell(1, last_col).value
+            
+            if control_value:
+                last_col += 1
+            
+            self._process_archive_data(archive, 10, last_col)
+            print("✅ 현재 문서 HTML Archive 업데이트 완료")
+            
+        except Exception as e:
+            print(f"❌ 현재 문서 HTML Archive 업데이트 실패: {str(e)}")
+
+    def _cleanup_current_downloads(self):
+        """현재 문서 다운로드 파일 정리"""
+        try:
+            if os.path.exists(self.download_dir):
+                for file in os.listdir(self.download_dir):
+                    file_path = os.path.join(self.download_dir, file)
+                    if os.path.isfile(file_path):
+                        os.remove(file_path)
+                print("🧹 현재 문서 파일 정리 완료")
+            
+            # Excel 파일 경로 초기화
+            self.results['xbrl']['excel_files'] = {}
+            
+        except Exception as e:
+            print(f"⚠️ 현재 문서 파일 정리 실패: {str(e)}")
 
     def _update_single_xbrl_archive(self, sheet_name, file_path, file_type):
         """개별 XBRL Archive 시트 업데이트"""
