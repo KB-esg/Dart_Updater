@@ -489,64 +489,72 @@ class DartExcelDownloader:
             print(f"❌ XBRL Archive 업데이트 실패: {str(e)}")
 
     def _debug_excel_structure(self, file_path, file_type):
-        """Excel 파일 구조 디버깅"""
+        """Excel 파일 구조 디버깅 (주석 시트 탐지 강화)"""
         try:
             print(f"\n  🔍 Excel 파일 구조 분석: {file_type}")
             wb = load_workbook(file_path, data_only=True)
-            
+        
             print(f"  📋 시트 목록: {wb.sheetnames}")
             print(f"  📊 총 시트 수: {len(wb.sheetnames)}")
+        
+            # 주석 시트 후보 찾기
+            if file_type == 'notes':
+                print(f"\n  🔍 주석 시트 후보 분석:")
+                notes_candidates = []
             
-            # 각 시트의 구조 분석
-            for sheet_name in wb.sheetnames[:5]:  # 처음 5개 시트만
-                if sheet_name.startswith('D'):
-                    worksheet = wb[sheet_name]
-                    print(f"\n  📄 시트 분석: {sheet_name}")
-                    print(f"     크기: {worksheet.max_row}행 x {worksheet.max_column}열")
+                for sheet_name in wb.sheetnames:
+                    if sheet_name in ['Index', '공시기본정보']:
+                        continue
                     
-                    # 처음 10행의 데이터 출력
-                    print(f"     데이터 샘플 (처음 10행):")
-                    for row_idx in range(1, min(11, worksheet.max_row + 1)):
-                        row_data = []
+                    worksheet = wb[sheet_name]
+                
+                    # 시트 내용 스캔
+                    has_notes_keywords = False
+                    sample_content = []
+                
+                    for row_idx in range(1, min(21, worksheet.max_row + 1)):
                         for col_idx in range(1, min(6, worksheet.max_column + 1)):
                             cell = worksheet.cell(row=row_idx, column=col_idx)
-                            if cell.value is not None:
-                                value_str = str(cell.value)[:30]
-                                if len(str(cell.value)) > 30:
-                                    value_str += "..."
-                                row_data.append(f"{self._get_column_letter(col_idx-1)}:{value_str}")
-                        
-                        if row_data:
-                            print(f"       행{row_idx}: {' | '.join(row_data)}")
-                    
-                    # 데이터가 있는 열 분석
-                    print(f"     열 분석:")
-                    data_cols = []
-                    for col_idx in range(1, min(11, worksheet.max_column + 1)):
-                        has_data = False
-                        numeric_count = 0
-                        text_count = 0
-                        
-                        for row_idx in range(1, min(51, worksheet.max_row + 1)):
-                            cell = worksheet.cell(row=row_idx, column=col_idx)
-                            if cell.value is not None:
-                                has_data = True
-                                if isinstance(cell.value, (int, float)):
-                                    numeric_count += 1
-                                elif isinstance(cell.value, str) and cell.value.strip():
-                                    text_count += 1
-                        
-                        if has_data:
-                            col_letter = self._get_column_letter(col_idx-1)
-                            data_cols.append(f"{col_letter}열(숫자:{numeric_count}, 텍스트:{text_count})")
-                    
-                    print(f"       데이터 있는 열: {', '.join(data_cols)}")
+                            if cell.value and isinstance(cell.value, str):
+                                value = str(cell.value)
+                                sample_content.append(value[:50])
+                            
+                            # 주석 키워드 체크
+                                if any(keyword in value for keyword in ['주석', '주요', '회계정책', '유의적', '현금', '매출채권', '재고자산', '유형자산', '무형자산']):
+                                    has_notes_keywords = True
+                
+                    if has_notes_keywords or sheet_name.startswith('D8'):
+                        notes_candidates.append(sheet_name)
+                        print(f"    📄 주석 후보: {sheet_name}")
+                        print(f"       샘플 내용: {', '.join(sample_content[:3])}")
+        
+        # 각 시트의 구조 분석
+            for sheet_name in wb.sheetnames[:5]:  # 처음 5개 시트만
+                worksheet = wb[sheet_name]
+                print(f"\n  📄 시트 분석: {sheet_name}")
+                print(f"     크기: {worksheet.max_row}행 x {worksheet.max_column}열")
+            
+            # 처음 10행의 데이터 출력
+                print(f"     데이터 샘플 (처음 10행):")
+                for row_idx in range(1, min(11, worksheet.max_row + 1)):
+                    row_data = []
+                    for col_idx in range(1, min(6, worksheet.max_column + 1)):
+                        cell = worksheet.cell(row=row_idx, column=col_idx)
+                        if cell.value is not None:
+                            value_str = str(cell.value)[:30]
+                            if len(str(cell.value)) > 30:
+                                value_str += "..."
+                            row_data.append(f"{self._get_column_letter(col_idx-1)}:{value_str}")
+                
+                    if row_data:
+                        print(f"       행{row_idx}: {' | '.join(row_data)}")
             
             wb.close()
-            
+        
         except Exception as e:
             print(f"  ❌ Excel 구조 분석 실패: {str(e)}")
 
+    
     def _update_single_xbrl_archive(self, sheet_name, file_path, file_type):
         """개별 XBRL Archive 시트 업데이트 (연결/별도 구분)"""
         try:
@@ -1392,23 +1400,63 @@ class DartExcelDownloader:
         """주석 데이터를 배치 업데이트용으로 준비 (들여쓰기 구조 보존)"""
         try:
             print(f"  🔄 주석 배치 업데이트용 데이터 준비 중... ({notes_type})")
+        
+            # 디버깅: 전체 시트 목록 출력
+            print(f"    📋 전체 시트 목록: {wb.sheetnames}")
+        
+            # 주석 시트 찾기 - 더 유연한 패턴 사용
+            target_sheets = []
+        
+            # 패턴 1: D8로 시작하는 시트
+            d8_sheets = [name for name in wb.sheetnames if name.startswith('D8')]
+        
+            # 패턴 2: 시트 내용에서 주석 판별
+            for sheet_name in wb.sheetnames:
+                if sheet_name in ['Index', '공시기본정보']:
+                    continue
+                
+                worksheet = wb[sheet_name]
             
-            # D8로 시작하는 주석 시트 필터링
-            if notes_type == 'connected':
-                # 연결: D8로 시작하고 0으로 끝나거나 연결이 포함된 시트
-                target_sheets = [name for name in wb.sheetnames 
-                               if name.startswith('D8') and (name.endswith('0') or '연결' in name)]
-            else:  # separate
-                # 별도: D8로 시작하고 5로 끝나거나 별도가 포함된 시트
-                target_sheets = [name for name in wb.sheetnames 
-                               if name.startswith('D8') and (name.endswith('5') or '별도' in name)]
+                # 시트 내용 확인 (처음 20행)
+                is_notes_sheet = False
+                for row_idx in range(1, min(21, worksheet.max_row + 1)):
+                    for col_idx in range(1, min(6, worksheet.max_column + 1)):
+                        cell = worksheet.cell(row=row_idx, column=col_idx)
+                        if cell.value and isinstance(cell.value, str):
+                            value = str(cell.value).lower()
+                            # 주석 시트 판별 키워드
+                            if any(keyword in value for keyword in ['주석', '주요', '회계정책', '유의적', '현금', '매출채권', '재고자산']):
+                                is_notes_sheet = True
+                                break
+                    if is_notes_sheet:
+                        break
             
-            print(f"    📄 {notes_type} 주석 시트 {len(target_sheets)}개 발견")
-            
+                if is_notes_sheet and sheet_name not in d8_sheets:
+                    # 연결/별도 구분
+                    sheet_title = self._get_sheet_title(worksheet)
+                    if notes_type == 'connected':
+                        if '연결' in sheet_title or sheet_name.endswith('0') or (not '별도' in sheet_title and not sheet_name.endswith('5')):
+                            target_sheets.append(sheet_name)
+                    else:  # separate
+                        if '별도' in sheet_title or sheet_name.endswith('5'):
+                            target_sheets.append(sheet_name)
+        
+            # D8 시트도 추가 (중복 제거)
+            for sheet_name in d8_sheets:
+                if sheet_name not in target_sheets:
+                    if notes_type == 'connected':
+                        if sheet_name.endswith('0') or '연결' in sheet_name:
+                            target_sheets.append(sheet_name)
+                    else:  # separate
+                        if sheet_name.endswith('5') or '별도' in sheet_name:
+                            target_sheets.append(sheet_name)
+        
+            print(f"    📄 {notes_type} 주석 시트 {len(target_sheets)}개 발견: {target_sheets}")
+        
             # 전체 데이터를 하나의 배열로 통합
             all_notes_account_data = []
             all_notes_value_data = []
-            
+        
             # 각 주석 시트의 데이터 추출 및 배치
             for sheet_name in sorted(target_sheets):
                 sheet_data = self._extract_notes_sheet_data(wb[sheet_name], sheet_name)
@@ -1416,7 +1464,7 @@ class DartExcelDownloader:
                     # 시트 제목 추가
                     all_notes_account_data.append([f"===== {sheet_data['title']} ====="])
                     all_notes_value_data.append([''])
-                    
+                
                     # 각 항목들 배치
                     for item in sheet_data['items']:
                         # 표시할 이름 결정
@@ -1430,35 +1478,35 @@ class DartExcelDownloader:
                             # 일반 항목
                             original_name = item.get('original_name', item['name'])
                             indent_level = item.get('indent_level', 0)
-                            
+                        
                             # 들여쓰기 적용
                             if indent_level > 0:
                                 display_name = "  " * indent_level + "└ " + original_name
                             else:
                                 display_name = original_name
-                        
+                    
                         all_notes_account_data.append([display_name])
                         all_notes_value_data.append([item['formatted_value']])
-                    
+                
                     # 구분을 위한 빈 행 추가
                     all_notes_account_data.append([''])
                     all_notes_value_data.append([''])
-                    
+                
                     # 통계 출력
                     categories = len([item for item in sheet_data['items'] if item.get('is_category')])
                     values = len([item for item in sheet_data['items'] if item.get('value') is not None])
                     text_items = len([item for item in sheet_data['items'] if item.get('value_type') == 'text'])
                     number_items = len([item for item in sheet_data['items'] if item.get('value_type') == 'number'])
-                    
+                
                     print(f"      ✅ {sheet_name}: {len(sheet_data['items'])}개 항목")
                     print(f"         - 분류: {categories}개, 값: {values}개 (숫자: {number_items}, 텍스트: {text_items})")
-            
+        
             # 통계 출력
             total_items = len([row for row in all_notes_account_data if row[0] and not row[0].startswith('=')])
             print(f"    📊 총 주석 항목: {total_items}개")
-            
+        
             return all_notes_account_data, all_notes_value_data
-            
+        
         except Exception as e:
             print(f"  ❌ 주석 배치 데이터 준비 실패: {str(e)}")
             import traceback
