@@ -79,10 +79,10 @@ class DartDualUpdater:
         # 환경변수 확인
         self._check_environment_variables()
         
-        # Google Sheets 설정
+        # Google Sheets 설정 (재시도 로직 포함)
         self.credentials = self._get_google_credentials()
         self.gc = gspread.authorize(self.credentials)
-        self.workbook = self.gc.open_by_key(os.environ[self.spreadsheet_var_name])
+        self.workbook = self._connect_to_spreadsheet_with_retry()
         
         # DART API 설정
         self.dart = OpenDartReader(os.environ['DART_API_KEY'])
@@ -138,6 +138,83 @@ class DartDualUpdater:
             'https://www.googleapis.com/auth/drive'
         ]
         return Credentials.from_service_account_info(creds_json, scopes=scopes)
+
+    def _connect_to_spreadsheet_with_retry(self, max_retries=5):
+        """Google Spreadsheet 연결 (재시도 로직 포함)"""
+        for attempt in range(max_retries):
+            try:
+                print(f"📊 Google Spreadsheet 연결 시도 {attempt + 1}/{max_retries}...")
+                workbook = self.gc.open_by_key(os.environ[self.spreadsheet_var_name])
+                print(f"✅ Google Spreadsheet 연결 성공!")
+                return workbook
+                
+            except gspread.exceptions.APIError as e:
+                error_code = str(e).split('[')[1].split(']')[0] if '[' in str(e) and ']' in str(e) else 'unknown'
+                
+                if error_code in ['503', '502', '500', '429']:
+                    wait_time = min(30 * (2 ** attempt), 300)  # 지수 백오프, 최대 5분
+                    print(f"⚠️ Google Sheets API 오류 {error_code}: {str(e)}")
+                    
+                    if attempt < max_retries - 1:
+                        print(f"⏳ {wait_time}초 후 재시도... (시도 {attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        print(f"❌ 최종 실패: Google Sheets 연결 불가")
+                        raise e
+                else:
+                    # 인증 오류나 권한 오류 등은 재시도하지 않음
+                    print(f"❌ Google Sheets 연결 실패 (재시도 불가): {str(e)}")
+                    raise e
+                    
+            except Exception as e:
+                print(f"⚠️ 예상치 못한 오류 (시도 {attempt + 1}/{max_retries}): {str(e)}")
+                if attempt < max_retries - 1:
+                    wait_time = min(15 * (attempt + 1), 60)
+                    print(f"⏳ {wait_time}초 후 재시도...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"❌ 최종 실패: Google Sheets 연결 불가")
+                    raise e
+        
+        raise Exception("Google Spreadsheet 연결에 실패했습니다.")
+
+    def _execute_sheets_operation_with_retry(self, operation, *args, max_retries=3, **kwargs):
+        """Google Sheets 작업 실행 (재시도 로직 포함)"""
+        for attempt in range(max_retries):
+            try:
+                return operation(*args, **kwargs)
+                
+            except gspread.exceptions.APIError as e:
+                error_code = str(e).split('[')[1].split(']')[0] if '[' in str(e) and ']' in str(e) else 'unknown'
+                
+                if error_code in ['503', '502', '500', '429']:
+                    if attempt < max_retries - 1:
+                        wait_time = min(30 * (2 ** attempt), 120)  # 지수 백오프, 최대 2분
+                        print(f"⚠️ Google Sheets API 오류 {error_code} (시도 {attempt + 1}/{max_retries})")
+                        print(f"⏳ {wait_time}초 후 재시도...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        print(f"❌ Google Sheets 작업 최종 실패: {str(e)}")
+                        raise e
+                else:
+                    print(f"❌ Google Sheets 작업 실패 (재시도 불가): {str(e)}")
+                    raise e
+                    
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    wait_time = 10 * (attempt + 1)
+                    print(f"⚠️ 예상치 못한 오류 (시도 {attempt + 1}/{max_retries}): {str(e)}")
+                    print(f"⏳ {wait_time}초 후 재시도...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    print(f"❌ 작업 최종 실패: {str(e)}")
+                    raise e
+        
+        raise Exception("Google Sheets 작업 실행에 실패했습니다.")
 
     def _setup_archive_row_mapping(self):
         """Archive 시트의 행 영역 매핑 설정"""
@@ -401,11 +478,15 @@ class DartDualUpdater:
             try:
                 print(f"📄 처리 중: {sheet_name} (시도 {attempt + 1}/{max_retries})")
                 
-                # 워크시트 가져오기 또는 생성
+                # 워크시트 가져오기 또는 생성 (재시도 로직 적용)
                 try:
-                    worksheet = self.workbook.worksheet(sheet_name)
+                    worksheet = self._execute_sheets_operation_with_retry(
+                        self.workbook.worksheet, sheet_name
+                    )
                 except gspread.exceptions.WorksheetNotFound:
-                    worksheet = self.workbook.add_worksheet(sheet_name, 1000, 10)
+                    worksheet = self._execute_sheets_operation_with_retry(
+                        self.workbook.add_worksheet, sheet_name, 1000, 10
+                    )
                     print(f"🆕 새 시트 생성: {sheet_name}")
                     time.sleep(2)
                 
@@ -439,14 +520,9 @@ class DartDualUpdater:
                     print(f"❌ 최종 실패: {sheet_name}")
                     self.results['html']['failed_sheets'].append(sheet_name)
             except gspread.exceptions.APIError as e:
-                if 'Quota exceeded' in str(e):
-                    print(f"⏳ Google Sheets API 할당량 초과. 60초 대기...")
-                    time.sleep(60)
-                    continue
-                else:
-                    print(f"❌ Google Sheets API 오류 ({sheet_name}): {str(e)}")
-                    self.results['html']['failed_sheets'].append(sheet_name)
-                    return
+                print(f"❌ Google Sheets API 오류 ({sheet_name}): {str(e)}")
+                self.results['html']['failed_sheets'].append(sheet_name)
+                return
             except Exception as e:
                 print(f"❌ HTML 워크시트 업데이트 실패 ({sheet_name}): {str(e)}")
                 self.results['html']['failed_sheets'].append(sheet_name)
@@ -457,7 +533,8 @@ class DartDualUpdater:
         soup = BeautifulSoup(html_content, 'html.parser')
         tables = soup.find_all("table")
         
-        worksheet.clear()
+        # 워크시트 클리어 (재시도 적용)
+        self._execute_sheets_operation_with_retry(worksheet.clear)
         all_data = []
         
         # 메타데이터 추가
@@ -487,31 +564,37 @@ class DartDualUpdater:
                     end_col_letter = self._get_column_letter(end_col - 1)
                     range_name = f'A{i+1}:{end_col_letter}{end_row}'
                     
-                    worksheet.update(values=batch, range_name=range_name)
+                    # 재시도 로직 적용
+                    self._execute_sheets_operation_with_retry(
+                        worksheet.update, values=batch, range_name=range_name
+                    )
                     time.sleep(2)  # API 제한 회피
-                except gspread.exceptions.APIError as e:
-                    if 'Quota exceeded' in str(e):
-                        print("⏳ 할당량 제한. 60초 대기...")
-                        time.sleep(60)
-                        worksheet.update(values=batch, range_name=range_name)
-                    else:
-                        raise e
+                except Exception as e:
+                    print(f"⚠️ 배치 업데이트 실패: {str(e)}")
+                    # 실패한 배치는 건너뛰고 계속 진행
+                    continue
 
     def _update_html_archive_for_current_report(self):
         """현재 보고서의 HTML Archive 업데이트 (개선된 키워드 검색)"""
         print("📊 현재 문서 HTML Archive 업데이트 중...")
         
         try:
-            # Dart_Archive 시트 접근
-            archive = self.workbook.worksheet('Dart_Archive')
-            sheet_values = archive.get_all_values()
+            # Dart_Archive 시트 접근 (재시도 적용)
+            archive = self._execute_sheets_operation_with_retry(
+                self.workbook.worksheet, 'Dart_Archive'
+            )
+            sheet_values = self._execute_sheets_operation_with_retry(
+                archive.get_all_values
+            )
             
             if not sheet_values:
                 print("⚠️ Dart_Archive 시트가 비어있습니다")
                 return
             
             last_col = len(sheet_values[0])
-            control_value = archive.cell(1, last_col).value
+            control_value = self._execute_sheets_operation_with_retry(
+                archive.cell, 1, last_col
+            ).value
             
             if control_value:
                 last_col += 1
@@ -545,7 +628,7 @@ class DartDualUpdater:
                     raise
 
             # 데이터 수집 시작
-            all_rows = archive.get_all_values()
+            all_rows = self._execute_sheets_operation_with_retry(archive.get_all_values)
             update_data = []
             sheet_cache = {}
             
@@ -575,8 +658,12 @@ class DartDualUpdater:
                     
                     if sheet_name not in sheet_cache:
                         try:
-                            search_sheet = self.workbook.worksheet(sheet_name)
-                            sheet_data = search_sheet.get_all_values()
+                            search_sheet = self._execute_sheets_operation_with_retry(
+                                self.workbook.worksheet, sheet_name
+                            )
+                            sheet_data = self._execute_sheets_operation_with_retry(
+                                search_sheet.get_all_values
+                            )
                             df = pd.DataFrame(sheet_data)
                             sheet_cache[sheet_name] = df
                             print(f"시트 '{sheet_name}' 데이터 로드 완료 (크기: {df.shape})")
@@ -643,10 +730,12 @@ class DartDualUpdater:
                     range_label = f'{target_col_letter}{min_row}:{target_col_letter}{max_row}'
                     print(f"업데이트 범위: {range_label}")
                     
-                    archive.batch_update([{
-                        'range': range_label,
-                        'values': column_data
-                    }])
+                    self._execute_sheets_operation_with_retry(
+                        archive.batch_update, [{
+                            'range': range_label,
+                            'values': column_data
+                        }]
+                    )
                     print(f"데이터 업데이트 완료: {min_row}~{max_row} 행")
                     
                     # 메타데이터 업데이트
@@ -660,7 +749,9 @@ class DartDualUpdater:
                         {'range': f'{target_col_letter}6', 'values': [[quarter_info]]}
                     ]
                     
-                    archive.batch_update(meta_updates)
+                    self._execute_sheets_operation_with_retry(
+                        archive.batch_update, meta_updates
+                    )
                     print(f"최종 업데이트 완료 (분기: {quarter_info})")
                     
                     message = (
