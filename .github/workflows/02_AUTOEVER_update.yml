@@ -35,6 +35,11 @@ on:
           - million      # 백만원
           - hundred_million  # 억원
           - billion      # 십억원
+      save_new_accounts:
+        description: '신규 계정명을 별도 파일로 저장'
+        required: false
+        default: 'false'
+        type: boolean
 
 jobs:
   download-dart-excel:
@@ -61,6 +66,7 @@ jobs:
       MANUAL_END_DATE: ${{ github.event.inputs.end_date }}
       ENABLE_ARCHIVE_UPDATE: 'true'
       NUMBER_UNIT: ${{ github.event.inputs.number_unit || 'million' }}  # 단위 설정
+      SAVE_NEW_ACCOUNTS: ${{ github.event.inputs.save_new_accounts || 'false' }}  # 신규 계정명 저장
       
     steps:
       - name: Checkout repository
@@ -95,6 +101,7 @@ jobs:
           echo "📅 날짜 범위: $([ "$CUSTOM_DATE_RANGE" = "true" ] && echo "$MANUAL_START_DATE ~ $MANUAL_END_DATE" || echo "최근 3개월")"
           echo "🔧 디버그 모드: $DEBUG_MODE"
           echo "💰 숫자 단위: $NUMBER_UNIT"
+          echo "📝 신규 계정명 저장: $SAVE_NEW_ACCOUNTS"
           
       - name: Run DART Excel downloader
         id: download
@@ -125,13 +132,14 @@ jobs:
           fi
         continue-on-error: true
         
-      - name: Upload logs
+      - name: Upload logs and new accounts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: dart-logs-${{ github.run_number }}
           path: |
             *.log
+            new_accounts_*.txt
           retention-days: 30
           
       - name: Summary
@@ -144,6 +152,7 @@ jobs:
           echo "| 🏢 회사 | $COMPANY_NAME ($COMPANY_CORP_CODE) |" >> $GITHUB_STEP_SUMMARY
           echo "| 📅 실행 시간 | $(date '+%Y-%m-%d %H:%M:%S') |" >> $GITHUB_STEP_SUMMARY
           echo "| 💰 숫자 단위 | $NUMBER_UNIT |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📝 신규 계정명 저장 | $SAVE_NEW_ACCOUNTS |" >> $GITHUB_STEP_SUMMARY
           echo "| ✅ 성공 여부 | ${{ steps.download.outputs.success || 'false' }} |" >> $GITHUB_STEP_SUMMARY
 
   notify:
