@@ -680,7 +680,7 @@ class DartExcelDownloader:
             return 11  # 기본값: M열
 
     def _update_xbrl_financial_archive_batch(self, sheet, wb, col_index):
-        """XBRL 재무제표 Archive 업데이트 (기존 계정명 체크 추가)"""
+        """XBRL 재무제표 Archive 업데이트 (신규 표시 제거)"""
         try:
             print(f"  📊 XBRL 재무제표 데이터 추출 중...")
             
@@ -708,7 +708,7 @@ class DartExcelDownloader:
             # STEP 2: 모든 재무 데이터를 메모리에서 준비
             all_account_data, all_value_data = self._prepare_financial_data_for_batch_update(wb)
             
-            # STEP 3: 신규 계정명 체크 및 표시
+            # STEP 3: 신규 계정명 추적 (표시는 하지 않음)
             new_accounts = []
             for idx, account_row in enumerate(all_account_data):
                 if account_row and account_row[0]:
@@ -718,8 +718,6 @@ class DartExcelDownloader:
                         not account_name.startswith('===') and
                         account_name not in existing_accounts):
                         new_accounts.append((idx, account_name))
-                        # 신규 계정명 표시 추가
-                        account_row[0] = f"{account_name} [신규]"
             
             if new_accounts:
                 print(f"  🆕 신규 계정명 {len(new_accounts)}개 발견:")
@@ -751,12 +749,30 @@ class DartExcelDownloader:
                 sheet.update(value_range, all_value_data)
                 print(f"    ✅ {col_letter}열 값 {len([row for row in all_value_data if row[0]])}개 업데이트 완료")
             
+            # STEP 5: 신규 계정명 목록을 별도로 저장 (옵션)
+            if new_accounts and os.environ.get('SAVE_NEW_ACCOUNTS', 'false').lower() == 'true':
+                self._save_new_accounts_log(new_accounts, quarter_info)
+            
             print(f"  ✅ XBRL 재무제표 Archive 배치 업데이트 완료")
             
         except Exception as e:
             print(f"❌ XBRL 재무제표 Archive 업데이트 실패: {str(e)}")
             import traceback
             print(f"📋 상세 오류: {traceback.format_exc()}")
+    
+    def _save_new_accounts_log(self, new_accounts, quarter_info):
+        """신규 계정명을 별도 파일로 저장"""
+        try:
+            log_filename = f"new_accounts_{self.company_name}_{quarter_info}_{datetime.now().strftime('%Y%m%d')}.txt"
+            with open(log_filename, 'w', encoding='utf-8') as f:
+                f.write(f"신규 계정명 목록 - {self.company_name} ({quarter_info})\n")
+                f.write(f"생성일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write("=" * 50 + "\n\n")
+                for idx, name in new_accounts:
+                    f.write(f"{name}\n")
+            print(f"  📝 신규 계정명 로그 저장: {log_filename}")
+        except Exception as e:
+            print(f"  ⚠️ 신규 계정명 로그 저장 실패: {str(e)}")
 
     def _prepare_financial_data_for_batch_update(self, wb):
         """재무 데이터를 배치 업데이트용으로 준비 (모든 데이터 포함)"""
@@ -1283,7 +1299,7 @@ class DartExcelDownloader:
             return 6
 
     def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index, notes_type='connected'):
-        """XBRL 재무제표주석 Archive 업데이트 (기존 항목명 체크 추가)"""
+        """XBRL 재무제표주석 Archive 업데이트 (신규 표시 제거)"""
         try:
             print(f"  📝 XBRL 주석 데이터 분석 중... ({notes_type})")
             
@@ -1319,7 +1335,7 @@ class DartExcelDownloader:
             # STEP 2: 모든 주석 데이터를 메모리에서 준비
             all_notes_account_data, all_notes_value_data = self._prepare_notes_data_for_batch_update(wb, notes_type)
             
-            # STEP 3: 신규 항목명 체크 및 표시
+            # STEP 3: 신규 항목명 추적 (표시는 하지 않음)
             new_items = []
             for idx, item_row in enumerate(all_notes_account_data):
                 if item_row and item_row[0]:
@@ -1334,12 +1350,6 @@ class DartExcelDownloader:
                     # 신규 항목인지 체크
                     if original_name and original_name not in existing_items:
                         new_items.append((idx, original_name))
-                        # 신규 항목 표시 추가
-                        if '└' in item_name:
-                            prefix = item_name.split('└')[0] + '└ '
-                            item_row[0] = f"{prefix}{original_name} [신규]"
-                        else:
-                            item_row[0] = f"{item_name} [신규]"
             
             if new_items:
                 print(f"  🆕 신규 항목명 {len(new_items)}개 발견:")
@@ -1454,6 +1464,35 @@ class DartExcelDownloader:
             import traceback
             traceback.print_exc()
             return [], []
+
+    def _extract_cell_value(self, cell_value):
+        """셀 값에서 실제 값과 타입 추출"""
+        if cell_value is None:
+            return None, None
+            
+        # 숫자인 경우
+        if isinstance(cell_value, (int, float)):
+            return cell_value, 'number'
+        
+        # 문자열인 경우
+        elif isinstance(cell_value, str):
+            str_val = str(cell_value).strip()
+            if not str_val or str_val == '-':
+                return None, None
+                
+            # 숫자 변환 시도
+            try:
+                clean_num = str_val.replace(',', '').replace('(', '-').replace(')', '').strip()
+                if clean_num and clean_num != '-' and clean_num.replace('-', '').replace('.', '').isdigit():
+                    return float(clean_num), 'number'
+            except:
+                pass
+            
+            # 텍스트로 처리
+            if len(str_val) >= 2:
+                return str_val, 'text'
+        
+        return None, None
 
     def _extract_notes_sheet_data(self, worksheet, sheet_name):
         """개별 주석 시트에서 데이터 추출 (들여쓰기 및 대괄호 처리 개선)"""
