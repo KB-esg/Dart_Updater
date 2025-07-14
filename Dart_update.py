@@ -23,8 +23,6 @@ class DartDualUpdater:
         'I. 회사의 개요', 'II. 사업의 내용', '1. 사업의 개요', '2. 주요 제품 및 서비스',
         '3. 원재료 및 생산설비', '4. 매출 및 수주상황', '5. 위험관리 및 파생거래',
         '6. 주요계약 및 연구활동', '7. 기타 참고 사항', '1. 요약재무정보',
-        # 재무제표 관련 시트 제외 (XBRL에서 처리)
-        # '2. 연결재무제표', '3. 연결재무제표 주석', '4. 재무제표', '5. 재무제표 주석',
         '6. 배당에 관한 사항', '8. 기타 재무에 관한 사항', 'VII. 주주에 관한 사항',
         'VIII. 임원 및 직원 등에 관한 사항', 'X. 대주주 등과의 거래내용',
         'XI. 그 밖에 투자자 보호를 위하여 필요한 사항'
@@ -1200,15 +1198,12 @@ class DartDualUpdater:
                 # 첫 번째 비어있지 않은 셀의 위치와 내용 찾기
                 first_text = None
                 first_col = -1
-                text_positions = []  # (열번호, 텍스트) 쌍 저장
                 
                 for col_idx, cell in enumerate(row):
                     if cell and str(cell).strip():
-                        text = str(cell).strip()
-                        text_positions.append((col_idx, text))
-                        if first_text is None:
-                            first_text = text
-                            first_col = col_idx
+                        first_text = str(cell).strip()
+                        first_col = col_idx
+                        break
                 
                 if not first_text or len(first_text) < 2:
                     continue
@@ -1236,10 +1231,9 @@ class DartDualUpdater:
                 
                 # 긴 텍스트 판별 (50자 이상)
                 is_long_text = len(first_text) > 50
-                text_pattern = self._analyze_text_pattern(first_text)
                 
-                # 긴 텍스트이거나 설명문 패턴이고, 바로 이전에 짧은 항목명이 있는 경우
-                if (is_long_text or text_pattern == 'description') and last_item and not last_item.get('is_category'):
+                # 긴 텍스트이고, 바로 이전에 짧은 항목명이 있는 경우
+                if is_long_text and last_item and not last_item.get('is_category'):
                     # 이전 항목의 값으로 처리
                     if last_item.get('value'):
                         # 이미 값이 있으면 추가
@@ -1260,7 +1254,7 @@ class DartDualUpdater:
                     indent_level = first_col
                     
                     # 긴 텍스트이고 마지막 항목이 있으면 그 항목의 값으로 처리
-                    if (is_long_text or text_pattern == 'description') and last_item and not last_item.get('is_category'):
+                    if is_long_text and last_item and not last_item.get('is_category'):
                         if last_item.get('value'):
                             existing_value = str(last_item['value'])
                             last_item['value'] = existing_value + "\n" + ("  " * indent_level) + first_text
@@ -1275,22 +1269,12 @@ class DartDualUpdater:
                     value = None
                     value_type = None
                     
-                    # 같은 행에서 첫 번째 텍스트 이후의 값 찾기
-                    for i, (col_idx, text) in enumerate(text_positions):
-                        if col_idx == first_col and i < len(text_positions) - 1:
-                            # 다음 항목이 값일 가능성
-                            next_col, next_text = text_positions[i + 1]
-                            value, value_type = self._extract_cell_value(next_text)
+                    # 값 찾기
+                    for col_idx in range(first_col + 1, len(row)):
+                        if row[col_idx] is not None:
+                            value, value_type = self._extract_cell_value(row[col_idx])
                             if value is not None:
                                 break
-                    
-                    # 값을 못 찾았으면 첫 텍스트 이후의 모든 셀 확인
-                    if value is None:
-                        for col_idx in range(first_col + 1, len(row)):
-                            if row[col_idx] is not None:
-                                value, value_type = self._extract_cell_value(row[col_idx])
-                                if value is not None:
-                                    break
                     
                     # 들여쓰기 표시와 함께 항목 추가
                     display_name = "  " * indent_level + "└ " + first_text
@@ -1317,7 +1301,7 @@ class DartDualUpdater:
                     is_subcategory = False
                     
                     # 다음 행들이 들여쓰기되어 있는지 확인
-                    if row_idx + 1 < len(all_data) and not is_long_text and text_pattern != 'description':
+                    if row_idx + 1 < len(all_data) and not is_long_text:
                         next_rows_indented = 0
                         for check_idx in range(row_idx + 1, min(row_idx + 6, len(all_data))):
                             if check_idx < len(all_data):
@@ -1373,7 +1357,7 @@ class DartDualUpdater:
                             'row_number': row_idx + 1,
                             'value_type': value_type,
                             'indent_level': 0,
-                            'text_length': len(first_text)  # 텍스트 길이 저장
+                            'text_length': len(first_text)
                         }
                         sheet_data['items'].append(new_item)
                         last_item = new_item
@@ -1398,43 +1382,6 @@ class DartDualUpdater:
             import traceback
             traceback.print_exc()
             return None
-
-    def _analyze_text_pattern(self, text):
-        """텍스트 패턴 분석하여 항목명인지 긴 설명인지 판단"""
-        # 항목명 패턴
-        item_patterns = [
-            r'^\d+\.',  # 숫자로 시작 (1. 2. 등)
-            r'^\([가-힣]\)',  # (가) (나) 등
-            r'^\[[가-힣]\]',  # [가] [나] 등
-            r'^[①-⑩]',  # 원 숫자
-            r'^[가-힣]{2,10},  # 짧은 한글 단어
-        ]
-        
-        # 설명 패턴
-        description_patterns = [
-            r'[은는이가을를에서의로와과]',  # 조사가 많이 포함된 경우
-            r'[했습니다|합니다|됩니다|있습니다]',  # 문장 종결어
-            r'[하였고|하였으며|되었고|되었으며]',  # 연결어
-        ]
-        
-        # 항목명 패턴 체크
-        for pattern in item_patterns:
-            if re.match(pattern, text):
-                return 'item'
-        
-        # 설명 패턴 체크
-        description_score = 0
-        for pattern in description_patterns:
-            if re.search(pattern, text):
-                description_score += 1
-        
-        # 길이와 설명 점수로 판단
-        if len(text) > 50 and description_score >= 2:
-            return 'description'
-        elif len(text) > 100:
-            return 'description'
-        
-        return 'item'
 
     def _extract_cell_value(self, cell_value):
         """셀 값에서 실제 값과 타입 추출"""
@@ -1466,33 +1413,30 @@ class DartDualUpdater:
         return None, None
 
     def _format_notes_value(self, value, value_type=None):
-        """주석 값 포맷팅 (숫자 및 텍스트 처리, 환경변수 단위 적용)"""
+        """주석 값 포맷팅"""
         try:
             if value is None:
                 return ''
             
             # 텍스트인 경우
             if value_type == 'text' or isinstance(value, str):
-                # 긴 텍스트는 적절히 잘라서 표시
                 text_value = str(value).strip()
                 if len(text_value) > 100:
                     return text_value[:97] + "..."
                 else:
                     return text_value
             
-            # 숫자인 경우 - 환경변수 단위 적용
+            # 숫자인 경우
             elif isinstance(value, (int, float)):
-                # 환경변수에서 단위 가져오기
                 number_unit = os.environ.get('NUMBER_UNIT', 'million')
                 
-                if number_unit == 'million':  # 백만원
+                if number_unit == 'million':
                     if abs(value) >= 1000000:
                         converted_value = value / 1000000
                         return f"{converted_value:.1f}백만원"
                     else:
                         return f"{value:,.0f}"
-                
-                elif number_unit == 'hundred_million':  # 억원
+                elif number_unit == 'hundred_million':
                     if abs(value) >= 100000000:
                         converted_value = value / 100000000
                         return f"{converted_value:.2f}억원"
@@ -1501,8 +1445,7 @@ class DartDualUpdater:
                         return f"{million_value:.1f}백만원"
                     else:
                         return f"{value:,.0f}"
-                
-                elif number_unit == 'billion':  # 십억원
+                elif number_unit == 'billion':
                     if abs(value) >= 1000000000:
                         converted_value = value / 1000000000
                         return f"{converted_value:.2f}십억원"
@@ -1511,14 +1454,12 @@ class DartDualUpdater:
                         return f"{hundred_million_value:.1f}억원"
                     else:
                         return f"{value:,.0f}"
-                
-                else:  # 기본값: 백만원
+                else:
                     if abs(value) >= 1000000:
                         converted_value = value / 1000000
                         return f"{converted_value:.1f}백만원"
                     else:
                         return f"{value:,.0f}"
-            
             else:
                 return str(value)
                 
@@ -1527,44 +1468,34 @@ class DartDualUpdater:
             return str(value) if value else ''
 
     def _format_number_for_archive(self, value):
-        """Archive용 숫자 포맷팅 (환경변수로 단위 설정)"""
+        """Archive용 숫자 포맷팅"""
         try:
             if not value:
                 return ''
             
-            # 숫자 변환
             num = self._clean_number(value)
             if num is None:
                 return ''
             
-            # 환경변수에서 단위 가져오기 (기본값: 백만원)
             number_unit = os.environ.get('NUMBER_UNIT', 'million')
             
-            # 단위별 변환
-            if number_unit == 'million':  # 백만원
+            if number_unit == 'million':
                 unit_value = num / 1000000
-                unit_suffix = "백만원"
-            elif number_unit == 'hundred_million':  # 억원
+            elif number_unit == 'hundred_million':
                 unit_value = num / 100000000
-                unit_suffix = "억원"
-            elif number_unit == 'billion':  # 십억원
+            elif number_unit == 'billion':
                 unit_value = num / 1000000000
-                unit_suffix = "십억원"
-            else:  # 기본값: 백만원
-                unit_value = num / 1000000
-                unit_suffix = "백만원"
-            
-            # 소수점 자리 결정
-            if abs(unit_value) >= 1000:
-                formatted = f"{unit_value:.0f}"  # 1000 이상은 정수
-            elif abs(unit_value) >= 100:
-                formatted = f"{unit_value:.1f}"  # 100 이상은 소수점 1자리
             else:
-                formatted = f"{unit_value:.2f}"  # 100 미만은 소수점 2자리
+                unit_value = num / 1000000
             
-            # 단위 표시 여부 (처음 한 번만 표시하도록 할 수도 있음)
-            # return f"{formatted} {unit_suffix}"  # 단위 포함
-            return formatted  # 단위 제외 (헤더에 표시)
+            if abs(unit_value) >= 1000:
+                formatted = f"{unit_value:.0f}"
+            elif abs(unit_value) >= 100:
+                formatted = f"{unit_value:.1f}"
+            else:
+                formatted = f"{unit_value:.2f}"
+            
+            return formatted
                 
         except Exception as e:
             print(f"    ⚠️ 숫자 포맷팅 오류 ({value}): {str(e)}")
@@ -1586,18 +1517,12 @@ class DartDualUpdater:
     def _get_quarter_info(self):
         """보고서 기준 분기 정보 반환"""
         try:
-            if self.current_report is not None and hasattr(self.current_report, 'get'):
-                if hasattr(self.current_report, 'iloc'):
-                    report_name = self.current_report.get('report_nm', '')
-                else:
-                    report_name = self.current_report.get('report_nm', '')
+            if self.current_report is not None:
+                report_name = self.current_report.get('report_nm', '')
                 
                 if report_name:
                     print(f"  📅 보고서 분석: {report_name}")
                     
-                    import re
-                    
-                    # 패턴 매칭으로 분기 정보 추출
                     if '1분기' in str(report_name):
                         current_year = datetime.now().year
                         quarter_text = f"1Q{str(current_year)[2:]}"
@@ -1648,7 +1573,7 @@ class DartDualUpdater:
         return default_quarter
 
     def _get_sheet_title(self, worksheet):
-        """시트의 제목 찾기 (처음 10행에서)"""
+        """시트의 제목 찾기"""
         try:
             for row_idx in range(1, min(11, worksheet.max_row + 1)):
                 for col_idx in range(1, min(4, worksheet.max_column + 1)):
@@ -1666,7 +1591,7 @@ class DartDualUpdater:
     def _get_column_letter(self, col_index):
         """컬럼 인덱스를 문자로 변환 (0-based)"""
         result = ""
-        num = col_index + 1  # 1-based로 변환
+        num = col_index + 1
         while num > 0:
             num, remainder = divmod(num - 1, 26)
             result = chr(65 + remainder) + result
@@ -1691,15 +1616,12 @@ class DartDualUpdater:
     def _cleanup_downloads(self):
         """다운로드 폴더 정리"""
         try:
-            # Archive 업데이트가 완료된 후에만 정리
             if os.path.exists(self.download_dir) and self.results.get('xbrl', {}).get('excel_files'):
-                # Excel 파일들만 남기고 다른 파일들 정리
                 for file in os.listdir(self.download_dir):
                     file_path = os.path.join(self.download_dir, file)
                     if file_path not in self.results['xbrl']['downloaded_files']:
                         os.remove(file_path)
                 
-                # Archive 업데이트 완료 후 전체 폴더 삭제
                 if os.environ.get('DELETE_AFTER_ARCHIVE', 'true').lower() == 'true':
                     shutil.rmtree(self.download_dir)
                     print("🧹 다운로드 폴더 정리 완료")
@@ -1721,7 +1643,6 @@ class DartDualUpdater:
         print(f"HTML 처리된 시트: {len(self.results['html']['processed_sheets'])}개")
         print(f"HTML 실패: {len(self.results['html']['failed_sheets'])}개")
         
-        # 텔레그램 메시지 전송
         if self.telegram_bot_token and self.telegram_channel_id:
             self._send_telegram_summary()
 
@@ -1755,7 +1676,6 @@ class DartDualUpdater:
 
 def load_company_config():
     """회사 설정 로드"""
-    # 환경변수에서 읽기
     corp_code = os.environ.get('COMPANY_CORP_CODE', '307950')
     company_name = os.environ.get('COMPANY_NAME', '현대오토에버')
     spreadsheet_var = os.environ.get('COMPANY_SPREADSHEET_VAR', 'AUTOEVER_SPREADSHEET_ID')
@@ -1770,17 +1690,14 @@ def load_company_config():
 def main():
     """메인 실행 함수"""
     try:
-        # Playwright 설치 확인
         print("🔧 Playwright 브라우저 설치 확인...")
         os.system("playwright install chromium")
         
-        # 회사 설정 로드
         company_config = load_company_config()
         
         print(f"🤖 DART 통합 업데이터 시스템")
         print(f"🏢 대상 기업: {company_config['company_name']} ({company_config['corp_code']})")
         
-        # 통합 업데이터 실행
         updater = DartDualUpdater(company_config)
         updater.run()
         
