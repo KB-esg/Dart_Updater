@@ -101,6 +101,15 @@ class DartExcelDownloader:
         """메인 실행 함수 (XBRL Archive 적용)"""
         print(f"\n🚀 {self.company_name}({self.corp_code}) 재무제표 다운로드 시작")
         
+        # 단위 정보 출력
+        number_unit = os.environ.get('NUMBER_UNIT', 'million')
+        unit_text = {
+            'million': '백만원',
+            'hundred_million': '억원',
+            'billion': '십억원'
+        }.get(number_unit, '백만원')
+        print(f"💰 숫자 표시 단위: {unit_text}")
+        
         # 1. 보고서 목록 조회
         reports = self._get_recent_reports()
         if reports.empty:
@@ -589,10 +598,18 @@ class DartExcelDownloader:
                 time.sleep(60)
 
     def _setup_xbrl_archive_header(self, sheet, file_type):
-        """XBRL Archive 시트 헤더 설정 (M열부터 데이터 시작, 수정됨)"""
+        """XBRL Archive 시트 헤더 설정 (M열부터 데이터 시작, 단위 표시 추가)"""
         try:
             # 현재 날짜
             current_date = datetime.now().strftime('%Y-%m-%d')
+            
+            # 단위 정보 가져오기
+            number_unit = os.environ.get('NUMBER_UNIT', 'million')
+            unit_text = {
+                'million': '백만원',
+                'hundred_million': '억원',
+                'billion': '십억원'
+            }.get(number_unit, '백만원')
             
             # 1. 기본 헤더만 설정 (A1:L6)
             header_data = []
@@ -605,7 +622,7 @@ class DartExcelDownloader:
             header_data.append(title_row)
             
             # 2행: 회사 정보
-            company_row = [f'회사명: {self.company_name}', '', '', '', '', '', '', '', '', '', '', '항목명↓']
+            company_row = [f'회사명: {self.company_name}', '', '', '', '', '', '', '', '', f'단위: {unit_text}', '', '항목명↓']
             header_data.append(company_row)
             
             # 3행: 종목 정보
@@ -625,6 +642,7 @@ class DartExcelDownloader:
             
             print(f"  ✅ XBRL Archive 기본 레이아웃 완료")
             print(f"      📁 파일타입: {'재무제표' if file_type == 'financial' else '재무제표주석'}")
+            print(f"      💰 단위: {unit_text}")
             print(f"      📊 헤더영역: A1:L6 (기본정보)")
             print(f"      📋 계정명영역: L열 (계정과목명)")
             print(f"      📈 데이터영역: M열부터 시작 (분기별 데이터)")
@@ -662,7 +680,7 @@ class DartExcelDownloader:
             return 11  # 기본값: M열
 
     def _update_xbrl_financial_archive_batch(self, sheet, wb, col_index):
-        """XBRL 재무제표 Archive 업데이트 (대용량 배치 업데이트 최적화)"""
+        """XBRL 재무제표 Archive 업데이트 (기존 계정명 체크 추가)"""
         try:
             print(f"  📊 XBRL 재무제표 데이터 추출 중...")
             
@@ -670,14 +688,47 @@ class DartExcelDownloader:
             col_letter = self._get_column_letter(col_index)
             print(f"  📍 데이터 입력 위치: {col_letter}열")
             
+            # STEP 1: 기존 L열의 계정명 읽어오기
+            existing_accounts = set()
+            try:
+                # L열 데이터 읽기 (7행부터)
+                l_column_values = sheet.col_values(12)  # L열은 12번째 열
+                for idx, account in enumerate(l_column_values[6:], start=7):  # 7행부터
+                    if account and account.strip():
+                        existing_accounts.add(account.strip())
+                
+                print(f"  📋 기존 계정명 {len(existing_accounts)}개 발견")
+            except Exception as e:
+                print(f"  ⚠️ 기존 계정명 읽기 실패: {str(e)}")
+            
             # 헤더 정보 업데이트
             report_date = datetime.now().strftime('%Y-%m-%d')
             quarter_info = self._get_quarter_info()
             
-            # STEP 1: 모든 재무 데이터를 메모리에서 준비
+            # STEP 2: 모든 재무 데이터를 메모리에서 준비
             all_account_data, all_value_data = self._prepare_financial_data_for_batch_update(wb)
             
-            # STEP 2: 대용량 배치 업데이트
+            # STEP 3: 신규 계정명 체크 및 표시
+            new_accounts = []
+            for idx, account_row in enumerate(all_account_data):
+                if account_row and account_row[0]:
+                    account_name = account_row[0]
+                    # 중분류나 구분선이 아닌 일반 계정명인 경우만 체크
+                    if (not account_name.startswith('[') and 
+                        not account_name.startswith('===') and
+                        account_name not in existing_accounts):
+                        new_accounts.append((idx, account_name))
+                        # 신규 계정명 표시 추가
+                        account_row[0] = f"{account_name} [신규]"
+            
+            if new_accounts:
+                print(f"  🆕 신규 계정명 {len(new_accounts)}개 발견:")
+                for idx, name in new_accounts[:5]:  # 처음 5개만 출력
+                    print(f"     - {name}")
+                if len(new_accounts) > 5:
+                    print(f"     ... 외 {len(new_accounts) - 5}개")
+            
+            # STEP 4: 대용량 배치 업데이트
             print(f"  🚀 대용량 배치 업데이트 시작...")
             
             # 배치 1: 헤더 정보 (분기정보와 날짜만)
@@ -1232,7 +1283,7 @@ class DartExcelDownloader:
             return 6
 
     def _update_xbrl_notes_archive_batch(self, sheet, wb, col_index, notes_type='connected'):
-        """XBRL 재무제표주석 Archive 업데이트 (실제 주석 시트 내용 배치 업데이트, 수정됨)"""
+        """XBRL 재무제표주석 Archive 업데이트 (기존 항목명 체크 추가)"""
         try:
             print(f"  📝 XBRL 주석 데이터 분석 중... ({notes_type})")
             
@@ -1240,14 +1291,64 @@ class DartExcelDownloader:
             col_letter = self._get_column_letter(col_index)
             print(f"  📍 데이터 입력 위치: {col_letter}열")
             
+            # STEP 1: 기존 L열의 항목명 읽어오기
+            existing_items = set()
+            try:
+                # L열 데이터 읽기 (7행부터)
+                l_column_values = sheet.col_values(12)  # L열은 12번째 열
+                for idx, item in enumerate(l_column_values[6:], start=7):  # 7행부터
+                    if item and item.strip():
+                        # display_name이 아닌 원본 항목명만 저장
+                        clean_item = item.strip()
+                        # 들여쓰기 표시 제거
+                        if '└' in clean_item:
+                            clean_item = clean_item.split('└')[-1].strip()
+                        # 중분류/하위분류 표시 제거
+                        if clean_item.startswith('[') and ']' in clean_item:
+                            clean_item = clean_item.split(']')[1].strip()
+                        existing_items.add(clean_item)
+                
+                print(f"  📋 기존 항목명 {len(existing_items)}개 발견")
+            except Exception as e:
+                print(f"  ⚠️ 기존 항목명 읽기 실패: {str(e)}")
+            
             # 헤더 정보 업데이트
             report_date = datetime.now().strftime('%Y-%m-%d')
             quarter_info = self._get_quarter_info()
             
-            # STEP 1: 모든 주석 데이터를 메모리에서 준비 (수정된 버전)
+            # STEP 2: 모든 주석 데이터를 메모리에서 준비
             all_notes_account_data, all_notes_value_data = self._prepare_notes_data_for_batch_update(wb, notes_type)
             
-            # STEP 2: 배치 업데이트
+            # STEP 3: 신규 항목명 체크 및 표시
+            new_items = []
+            for idx, item_row in enumerate(all_notes_account_data):
+                if item_row and item_row[0]:
+                    item_name = item_row[0]
+                    # 실제 항목명 추출 (display format에서)
+                    original_name = item_name
+                    if '└' in item_name:
+                        original_name = item_name.split('└')[-1].strip()
+                    elif item_name.startswith('[') and ']' in item_name:
+                        continue  # 중분류/하위분류는 체크하지 않음
+                    
+                    # 신규 항목인지 체크
+                    if original_name and original_name not in existing_items:
+                        new_items.append((idx, original_name))
+                        # 신규 항목 표시 추가
+                        if '└' in item_name:
+                            prefix = item_name.split('└')[0] + '└ '
+                            item_row[0] = f"{prefix}{original_name} [신규]"
+                        else:
+                            item_row[0] = f"{item_name} [신규]"
+            
+            if new_items:
+                print(f"  🆕 신규 항목명 {len(new_items)}개 발견:")
+                for idx, name in new_items[:5]:  # 처음 5개만 출력
+                    print(f"     - {name}")
+                if len(new_items) > 5:
+                    print(f"     ... 외 {len(new_items) - 5}개")
+            
+            # STEP 4: 배치 업데이트
             print(f"  🚀 주석 배치 업데이트 시작...")
             
             # 배치 1: 헤더 정보 (분기정보와 날짜만)
@@ -1278,113 +1379,72 @@ class DartExcelDownloader:
             print(f"📋 상세 오류: {traceback.format_exc()}")
 
     def _prepare_notes_data_for_batch_update(self, wb, notes_type):
-        """주석 데이터를 배치 업데이트용으로 준비 (모든 데이터 포함)"""
+        """주석 데이터를 배치 업데이트용으로 준비 (들여쓰기 구조 보존)"""
         try:
             print(f"  🔄 주석 배치 업데이트용 데이터 준비 중... ({notes_type})")
             
-            all_notes_account_data = []
-            all_notes_value_data = []
-            
-            # D8로 시작하는 모든 주석 시트 필터링
+            # D8로 시작하는 주석 시트 필터링
             if notes_type == 'connected':
-                # 연결: D8로 시작하고 0으로 끝나는 시트
-                target_sheets = [name for name in wb.sheetnames if name.startswith('D8') and (name.endswith('0') or '연결' in name)]
+                # 연결: D8로 시작하고 0으로 끝나거나 연결이 포함된 시트
+                target_sheets = [name for name in wb.sheetnames 
+                               if name.startswith('D8') and (name.endswith('0') or '연결' in name)]
             else:  # separate
-                # 별도: D8로 시작하고 5로 끝나는 시트
-                target_sheets = [name for name in wb.sheetnames if name.startswith('D8') and (name.endswith('5') or '별도' in name)]
+                # 별도: D8로 시작하고 5로 끝나거나 별도가 포함된 시트
+                target_sheets = [name for name in wb.sheetnames 
+                               if name.startswith('D8') and (name.endswith('5') or '별도' in name)]
             
             print(f"    📄 {notes_type} 주석 시트 {len(target_sheets)}개 발견")
             
-            # 각 주석 시트의 모든 데이터 추출
+            # 전체 데이터를 하나의 배열로 통합
+            all_notes_account_data = []
+            all_notes_value_data = []
+            
+            # 각 주석 시트의 데이터 추출 및 배치
             for sheet_name in sorted(target_sheets):
-                worksheet = wb[sheet_name]
-                
-                # 시트 제목 추가
-                sheet_title = f"[{sheet_name}] 주석"
-                all_notes_account_data.append([sheet_title])
-                all_notes_value_data.append([''])
-                
-                # 모든 행 처리 (필터링 최소화)
-                item_count = 0
-                max_rows = min(worksheet.max_row, 1000)
-                
-                for row_idx in range(1, max_rows + 1):
-                    row = list(worksheet.iter_rows(min_row=row_idx, max_row=row_idx, values_only=True))[0]
+                sheet_data = self._extract_notes_sheet_data(wb[sheet_name], sheet_name)
+                if sheet_data:
+                    # 시트 제목 추가
+                    all_notes_account_data.append([f"===== {sheet_data['title']} ====="])
+                    all_notes_value_data.append([''])
                     
-                    if not row:
-                        continue
+                    # 각 항목들 배치
+                    for item in sheet_data['items']:
+                        # 표시할 이름 결정
+                        if item.get('is_category'):
+                            # 중분류/하위분류
+                            display_name = item['name']  # 이미 [중분류] 또는 [하위분류] 포맷
+                        elif 'display_name' in item:
+                            # 들여쓰기가 적용된 표시 이름 사용
+                            display_name = item['display_name']
+                        else:
+                            # 일반 항목
+                            original_name = item.get('original_name', item['name'])
+                            indent_level = item.get('indent_level', 0)
+                            
+                            # 들여쓰기 적용
+                            if indent_level > 0:
+                                display_name = "  " * indent_level + "└ " + original_name
+                            else:
+                                display_name = original_name
+                        
+                        all_notes_account_data.append([display_name])
+                        all_notes_value_data.append([item['formatted_value']])
                     
-                    # 첫 번째 비어있지 않은 셀 찾기
-                    item_name = None
-                    item_col = -1
-                    
-                    for col_idx, cell in enumerate(row):
-                        if cell and str(cell).strip():
-                            item_name = str(cell).strip()
-                            item_col = col_idx
-                            break
-                    
-                    if not item_name or len(item_name) < 2:
-                        continue
-                    
-                    # 최소한의 필터링
-                    if item_name.startswith('[') or item_name.startswith('(단위'):
-                        continue
-                    
-                    # 값 찾기 (item_name 다음 열부터)
-                    value = None
-                    value_type = None
-                    
-                    if item_col < len(row) - 1:
-                        for val_idx in range(item_col + 1, len(row)):
-                            if row[val_idx] is not None and str(row[val_idx]).strip():
-                                cell_value = row[val_idx]
-                                
-                                # 숫자 확인
-                                if isinstance(cell_value, (int, float)):
-                                    value = cell_value
-                                    value_type = 'number'
-                                    break
-                                elif isinstance(cell_value, str):
-                                    str_val = str(cell_value).strip()
-                                    # 숫자 변환 시도
-                                    try:
-                                        clean_num = str_val.replace(',', '').replace('(', '-').replace(')', '').strip()
-                                        if clean_num and clean_num != '-':
-                                            value = float(clean_num)
-                                            value_type = 'number'
-                                            break
-                                    except:
-                                        # 텍스트로 처리
-                                        if len(str_val) >= 2:
-                                            value = str_val
-                                            value_type = 'text'
-                                            break
-                    
-                    # 들여쓰기 표시
-                    indent_prefix = "  " * item_col if item_col > 0 else ""
-                    display_name = f"{indent_prefix}{item_name}"
-                    
-                    # 데이터 추가
-                    all_notes_account_data.append([display_name])
-                    
-                    # 값 포맷팅
-                    if value is not None:
-                        formatted_value = self._format_notes_value(value, value_type)
-                        all_notes_value_data.append([formatted_value])
-                    else:
-                        all_notes_value_data.append([''])
-                    
-                    item_count += 1
-                
-                if item_count > 0:
-                    print(f"      ✅ {sheet_name}: {item_count}개 항목 추가")
                     # 구분을 위한 빈 행 추가
                     all_notes_account_data.append([''])
                     all_notes_value_data.append([''])
+                    
+                    # 통계 출력
+                    categories = len([item for item in sheet_data['items'] if item.get('is_category')])
+                    values = len([item for item in sheet_data['items'] if item.get('value') is not None])
+                    text_items = len([item for item in sheet_data['items'] if item.get('value_type') == 'text'])
+                    number_items = len([item for item in sheet_data['items'] if item.get('value_type') == 'number'])
+                    
+                    print(f"      ✅ {sheet_name}: {len(sheet_data['items'])}개 항목")
+                    print(f"         - 분류: {categories}개, 값: {values}개 (숫자: {number_items}, 텍스트: {text_items})")
             
             # 통계 출력
-            total_items = len([row for row in all_notes_account_data if row[0] and not row[0].startswith('[')])
+            total_items = len([row for row in all_notes_account_data if row[0] and not row[0].startswith('=')])
             print(f"    📊 총 주석 항목: {total_items}개")
             
             return all_notes_account_data, all_notes_value_data
@@ -1396,7 +1456,7 @@ class DartExcelDownloader:
             return [], []
 
     def _extract_notes_sheet_data(self, worksheet, sheet_name):
-        """개별 주석 시트에서 데이터 추출 (반복 텍스트를 세분류로 처리)"""
+        """개별 주석 시트에서 데이터 추출 (들여쓰기 및 대괄호 처리 개선)"""
         try:
             sheet_data = {
                 'title': sheet_name,
@@ -1416,145 +1476,166 @@ class DartExcelDownloader:
             
             print(f"      📊 시트 크기: {len(all_data)}행 x {max_col}열")
             
-            # STEP 1: 반복되는 텍스트 패턴 찾기 (세분류 판단용)
-            text_frequency = {}
-            text_first_occurrence = {}
-            
-            for row_idx, row in enumerate(all_data):
-                if not row:
-                    continue
-                    
-                # 각 열의 텍스트 수집
-                for col_idx, cell in enumerate(row):
-                    if cell and isinstance(cell, str):
-                        text = str(cell).strip()
-                        if len(text) >= 2 and not text.startswith(('[', '(단위')):
-                            if text not in text_frequency:
-                                text_frequency[text] = 0
-                                text_first_occurrence[text] = row_idx
-                            text_frequency[text] += 1
-            
-            # 3번 이상 반복되는 텍스트는 세분류로 간주
-            repeated_texts = set()
-            for text, count in text_frequency.items():
-                if count >= 3:
-                    repeated_texts.add(text)
-                    print(f"        📌 반복 텍스트 발견 (세분류): '{text}' ({count}번 반복)")
-            
-            # STEP 2: 중분류 찾기 및 데이터 구조화
+            # 현재 중분류
             current_category = ""
-            category_start_row = -1
-            items_buffer = []  # 임시 버퍼
+            current_subcategory = ""
             
             for row_idx, row in enumerate(all_data):
-                if not row:
+                if not row or not any(row):  # 빈 행 건너뛰기
                     continue
                 
-                # 첫 번째 비어있지 않은 셀 찾기
+                # 첫 번째 비어있지 않은 셀의 위치와 내용 찾기
                 first_text = None
                 first_col = -1
+                text_positions = []  # (열번호, 텍스트) 쌍 저장
                 
                 for col_idx, cell in enumerate(row):
                     if cell and str(cell).strip():
-                        first_text = str(cell).strip()
-                        first_col = col_idx
-                        break
+                        text = str(cell).strip()
+                        text_positions.append((col_idx, text))
+                        if first_text is None:
+                            first_text = text
+                            first_col = col_idx
                 
                 if not first_text or len(first_text) < 2:
                     continue
                 
-                # 제외할 패턴
-                if any(skip in first_text for skip in ['[', 'Index', '(단위', '단위:', 'Sheet']):
+                # 제외할 패턴 (단위 표시 등)
+                if any(skip in first_text for skip in ['(단위', '단위:', 'Index', 'Sheet']):
                     continue
                 
-                # 반복되는 텍스트인지 확인
-                is_repeated = first_text in repeated_texts
+                # 대괄호로 둘러싸인 텍스트는 분류명으로 처리
+                if first_text.startswith('[') and first_text.endswith(']'):
+                    category_name = first_text[1:-1]  # 대괄호 제거
+                    current_category = category_name
+                    current_subcategory = ""  # 새 중분류시 하위분류 초기화
+                    
+                    sheet_data['items'].append({
+                        'name': f"[중분류] {category_name}",
+                        'value': None,
+                        'formatted_value': '',
+                        'category': category_name,
+                        'is_category': True,
+                        'original_name': first_text
+                    })
+                    continue
                 
-                # 중분류 판단: 반복되지 않는 텍스트이고, 이후에 반복 텍스트가 나오는 경우
-                if not is_repeated and first_col == 0:  # 들여쓰기 없는 경우
-                    # 다음 행들 확인하여 반복 텍스트가 있는지 확인
-                    has_repeated_children = False
-                    for check_idx in range(row_idx + 1, min(row_idx + 10, len(all_data))):
-                        check_row = all_data[check_idx]
-                        if check_row:
-                            for check_cell in check_row:
-                                if check_cell and str(check_cell).strip() in repeated_texts:
-                                    has_repeated_children = True
-                                    break
-                            if has_repeated_children:
+                # A열이 비어있고 B열(또는 그 이후)에 텍스트가 있는 경우 - 들여쓰기된 항목
+                if first_col > 0:
+                    # 들여쓰기된 항목으로 처리
+                    indent_level = first_col
+                    
+                    # 값 찾기 - 텍스트 다음 위치부터
+                    value = None
+                    value_type = None
+                    
+                    # 같은 행에서 첫 번째 텍스트 이후의 값 찾기
+                    for i, (col_idx, text) in enumerate(text_positions):
+                        if col_idx == first_col and i < len(text_positions) - 1:
+                            # 다음 항목이 값일 가능성
+                            next_col, next_text = text_positions[i + 1]
+                            value, value_type = self._extract_cell_value(next_text)
+                            if value is not None:
                                 break
                     
-                    if has_repeated_children or (row_idx > 0 and len(items_buffer) > 2):
-                        # 이전 버퍼 처리
-                        if items_buffer and current_category:
-                            self._flush_items_buffer(sheet_data, current_category, items_buffer)
-                            items_buffer = []
+                    # 값을 못 찾았으면 첫 텍스트 이후의 모든 셀 확인
+                    if value is None:
+                        for col_idx in range(first_col + 1, len(row)):
+                            if row[col_idx] is not None:
+                                value, value_type = self._extract_cell_value(row[col_idx])
+                                if value is not None:
+                                    break
+                    
+                    # 들여쓰기 표시와 함께 항목 추가
+                    display_name = "  " * indent_level + "└ " + first_text
+                    unique_name = f"{current_category}_{current_subcategory}_{first_text}" if current_subcategory else f"{current_category}_{first_text}"
+                    
+                    sheet_data['items'].append({
+                        'name': unique_name,
+                        'original_name': first_text,
+                        'display_name': display_name,
+                        'value': value,
+                        'formatted_value': self._format_notes_value(value, value_type) if value is not None else '',
+                        'category': current_category,
+                        'subcategory': current_subcategory,
+                        'is_category': False,
+                        'row_number': row_idx + 1,
+                        'value_type': value_type,
+                        'indent_level': indent_level
+                    })
+                else:
+                    # A열에 있는 항목 (들여쓰기 없음)
+                    # 하위 분류일 가능성 체크
+                    is_subcategory = False
+                    
+                    # 다음 행들이 들여쓰기되어 있는지 확인
+                    if row_idx + 1 < len(all_data):
+                        next_rows_indented = 0
+                        for check_idx in range(row_idx + 1, min(row_idx + 6, len(all_data))):
+                            if check_idx < len(all_data):
+                                check_row = all_data[check_idx]
+                                # A열이 비어있고 B열 이후에 데이터가 있는지 확인
+                                if check_row and (not check_row[0] or not str(check_row[0]).strip()):
+                                    for col in range(1, min(5, len(check_row))):
+                                        if check_row[col] and str(check_row[col]).strip():
+                                            next_rows_indented += 1
+                                            break
                         
-                        # 새로운 중분류로 설정
-                        current_category = first_text
-                        category_start_row = row_idx
-                        
+                        if next_rows_indented >= 2:
+                            is_subcategory = True
+                            current_subcategory = first_text
+                    
+                    if is_subcategory:
+                        # 하위 분류로 처리
                         sheet_data['items'].append({
-                            'name': f"[중분류] {first_text}",
+                            'name': f"[하위분류] {first_text}",
                             'value': None,
                             'formatted_value': '',
-                            'category': first_text,
+                            'category': current_category,
+                            'subcategory': first_text,
                             'is_category': True,
+                            'is_subcategory': True,
                             'original_name': first_text
                         })
-                        continue
-                
-                # 일반 데이터 행 처리
-                # 값 찾기
-                value = None
-                value_type = None
-                
-                # 같은 행의 다음 셀들에서 값 찾기
-                for val_idx in range(first_col + 1, len(row)):
-                    if row[val_idx] is not None:
-                        value, value_type = self._extract_cell_value(row[val_idx])
-                        if value is not None:
-                            break
-                
-                # 항목 추가
-                item = {
-                    'name': f"{current_category}_{first_text}" if current_category else first_text,
-                    'original_name': first_text,
-                    'value': value,
-                    'formatted_value': self._format_notes_value(value, value_type) if value is not None else '',
-                    'category': current_category,
-                    'is_category': False,
-                    'row_number': row_idx,
-                    'value_type': value_type,
-                    'indent_level': first_col,
-                    'is_repeated': is_repeated
-                }
-                
-                # 반복되는 텍스트면 버퍼에 추가
-                if is_repeated and current_category:
-                    items_buffer.append(item)
-                else:
-                    # 버퍼 처리 후 일반 항목 추가
-                    if items_buffer and current_category:
-                        self._flush_items_buffer(sheet_data, current_category, items_buffer)
-                        items_buffer = []
-                    sheet_data['items'].append(item)
-            
-            # 마지막 버퍼 처리
-            if items_buffer and current_category:
-                self._flush_items_buffer(sheet_data, current_category, items_buffer)
+                    else:
+                        # 일반 항목으로 처리
+                        # 값 찾기
+                        value = None
+                        value_type = None
+                        
+                        # 같은 행의 다음 열들에서 값 찾기
+                        for col_idx in range(first_col + 1, len(row)):
+                            if row[col_idx] is not None:
+                                value, value_type = self._extract_cell_value(row[col_idx])
+                                if value is not None:
+                                    break
+                        
+                        unique_name = f"{current_category}_{current_subcategory}_{first_text}" if current_subcategory else f"{current_category}_{first_text}" if current_category else first_text
+                        
+                        sheet_data['items'].append({
+                            'name': unique_name,
+                            'original_name': first_text,
+                            'value': value,
+                            'formatted_value': self._format_notes_value(value, value_type) if value is not None else '',
+                            'category': current_category,
+                            'subcategory': current_subcategory,
+                            'is_category': False,
+                            'row_number': row_idx + 1,
+                            'value_type': value_type,
+                            'indent_level': 0
+                        })
             
             # 결과 요약
             if sheet_data['items']:
-                category_count = len([item for item in sheet_data['items'] if item.get('is_category')])
+                category_count = len([item for item in sheet_data['items'] if item.get('is_category') and not item.get('is_subcategory')])
+                subcategory_count = len([item for item in sheet_data['items'] if item.get('is_subcategory')])
                 value_count = len([item for item in sheet_data['items'] if item.get('value') is not None])
                 text_count = len([item for item in sheet_data['items'] if item.get('value_type') == 'text'])
                 number_count = len([item for item in sheet_data['items'] if item.get('value_type') == 'number'])
-                repeated_count = len([item for item in sheet_data['items'] if item.get('is_repeated')])
                 
                 print(f"      ✅ 추출 완료: 총 {len(sheet_data['items'])}개 항목")
                 print(f"         - 중분류: {category_count}개")
-                print(f"         - 반복 세분류: {repeated_count}개")
+                print(f"         - 하위분류: {subcategory_count}개") 
                 print(f"         - 값 있음: {value_count}개 (숫자: {number_count}, 텍스트: {text_count})")
             
             return sheet_data if sheet_data['items'] else None
@@ -1564,50 +1645,6 @@ class DartExcelDownloader:
             import traceback
             traceback.print_exc()
             return None
-
-    def _flush_items_buffer(self, sheet_data, category, items_buffer):
-        """버퍼에 있는 반복 항목들을 처리"""
-        if not items_buffer:
-            return
-            
-        # 반복되는 텍스트 이름
-        repeated_text = items_buffer[0]['original_name']
-        
-        # 같은 반복 텍스트끼리 그룹화
-        for idx, item in enumerate(items_buffer):
-            # 고유한 이름 생성 (중분류_반복텍스트_번호)
-            unique_name = f"{category}_{repeated_text}_{idx + 1}"
-            item['name'] = unique_name
-            sheet_data['items'].append(item)
-
-    def _extract_cell_value(self, cell_value):
-        """셀 값에서 실제 값과 타입 추출"""
-        if cell_value is None:
-            return None, None
-            
-        # 숫자인 경우
-        if isinstance(cell_value, (int, float)):
-            return cell_value, 'number'
-        
-        # 문자열인 경우
-        elif isinstance(cell_value, str):
-            str_val = str(cell_value).strip()
-            if not str_val or str_val == '-':
-                return None, None
-                
-            # 숫자 변환 시도
-            try:
-                clean_num = str_val.replace(',', '').replace('(', '-').replace(')', '').strip()
-                if clean_num and clean_num != '-' and clean_num.replace('-', '').replace('.', '').isdigit():
-                    return float(clean_num), 'number'
-            except:
-                pass
-            
-            # 텍스트로 처리
-            if len(str_val) >= 2:
-                return str_val, 'text'
-        
-        return None, None
 
     def _is_category_header(self, item_name, row_idx, worksheet):
         """항목이 중분류 헤더인지 판단"""
@@ -1670,7 +1707,7 @@ class DartExcelDownloader:
             return False
 
     def _format_notes_value(self, value, value_type=None):
-        """주석 값 포맷팅 (숫자 및 텍스트 처리)"""
+        """주석 값 포맷팅 (숫자 및 텍스트 처리, 환경변수 단위 적용)"""
         try:
             if value is None:
                 return ''
@@ -1684,18 +1721,44 @@ class DartExcelDownloader:
                 else:
                     return text_value
             
-            # 숫자인 경우 억원 단위로 변환
+            # 숫자인 경우 - 환경변수 단위 적용
             elif isinstance(value, (int, float)):
-                if abs(value) >= 100000000:  # 1억 이상
-                    billion_value = value / 100000000
-                    return f"{billion_value:.2f}억원"
-                elif abs(value) >= 1000000:  # 100만 이상
-                    million_value = value / 1000000
-                    return f"{million_value:.1f}백만원"
-                elif abs(value) >= 1000:  # 1000 이상
-                    return f"{value:,.0f}"
-                else:
-                    return str(value)
+                # 환경변수에서 단위 가져오기
+                number_unit = os.environ.get('NUMBER_UNIT', 'million')
+                
+                if number_unit == 'million':  # 백만원
+                    if abs(value) >= 1000000:
+                        converted_value = value / 1000000
+                        return f"{converted_value:.1f}백만원"
+                    else:
+                        return f"{value:,.0f}"
+                
+                elif number_unit == 'hundred_million':  # 억원
+                    if abs(value) >= 100000000:
+                        converted_value = value / 100000000
+                        return f"{converted_value:.2f}억원"
+                    elif abs(value) >= 1000000:
+                        million_value = value / 1000000
+                        return f"{million_value:.1f}백만원"
+                    else:
+                        return f"{value:,.0f}"
+                
+                elif number_unit == 'billion':  # 십억원
+                    if abs(value) >= 1000000000:
+                        converted_value = value / 1000000000
+                        return f"{converted_value:.2f}십억원"
+                    elif abs(value) >= 100000000:
+                        hundred_million_value = value / 100000000
+                        return f"{hundred_million_value:.1f}억원"
+                    else:
+                        return f"{value:,.0f}"
+                
+                else:  # 기본값: 백만원
+                    if abs(value) >= 1000000:
+                        converted_value = value / 1000000
+                        return f"{converted_value:.1f}백만원"
+                    else:
+                        return f"{value:,.0f}"
             
             else:
                 return str(value)
@@ -1705,7 +1768,7 @@ class DartExcelDownloader:
             return str(value) if value else ''
 
     def _format_number_for_archive(self, value):
-        """Archive용 숫자 포맷팅 (억원 단위)"""
+        """Archive용 숫자 포맷팅 (환경변수로 단위 설정)"""
         try:
             if not value:
                 return ''
@@ -1715,16 +1778,34 @@ class DartExcelDownloader:
             if num is None:
                 return ''
             
-            # 억원 단위로 변환
-            billion_value = num / 100000000
+            # 환경변수에서 단위 가져오기 (기본값: 백만원)
+            number_unit = os.environ.get('NUMBER_UNIT', 'million')
+            
+            # 단위별 변환
+            if number_unit == 'million':  # 백만원
+                unit_value = num / 1000000
+                unit_suffix = "백만원"
+            elif number_unit == 'hundred_million':  # 억원
+                unit_value = num / 100000000
+                unit_suffix = "억원"
+            elif number_unit == 'billion':  # 십억원
+                unit_value = num / 1000000000
+                unit_suffix = "십억원"
+            else:  # 기본값: 백만원
+                unit_value = num / 1000000
+                unit_suffix = "백만원"
             
             # 소수점 자리 결정
-            if abs(billion_value) >= 100:
-                return f"{billion_value:.0f}"  # 100억 이상은 정수
-            elif abs(billion_value) >= 10:
-                return f"{billion_value:.1f}"  # 10억 이상은 소수점 1자리
+            if abs(unit_value) >= 1000:
+                formatted = f"{unit_value:.0f}"  # 1000 이상은 정수
+            elif abs(unit_value) >= 100:
+                formatted = f"{unit_value:.1f}"  # 100 이상은 소수점 1자리
             else:
-                return f"{billion_value:.2f}"  # 10억 미만은 소수점 2자리
+                formatted = f"{unit_value:.2f}"  # 100 미만은 소수점 2자리
+            
+            # 단위 표시 여부 (처음 한 번만 표시하도록 할 수도 있음)
+            # return f"{formatted} {unit_suffix}"  # 단위 포함
+            return formatted  # 단위 제외 (헤더에 표시)
                 
         except Exception as e:
             print(f"    ⚠️ 숫자 포맷팅 오류 ({value}): {str(e)}")
