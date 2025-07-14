@@ -58,7 +58,7 @@ import shutil
 from tqdm import tqdm
 
 class DartDualUpdater:
-    """DART XBRL Excel 다운로드 + HTML 스크래핑 통합 시스템"""
+    """DART XBRL Excel 다운로드 + HTML 스크래핑 통합 시스템 (안전한 버전)"""
     
     # HTML 스크래핑 대상 시트 (재무제표 관련 제외)
     HTML_TARGET_SHEETS = [
@@ -292,9 +292,9 @@ class DartDualUpdater:
                             if os.environ.get('ENABLE_ARCHIVE_UPDATE', 'true').lower() == 'true':
                                 self._update_xbrl_archive_for_current_report()
                         
-                        # Step 3: HTML 스크래핑
+                        # Step 3: HTML 스크래핑 (단순한 방식으로 변경)
                         print("\n🔸 Step 3: HTML 스크래핑")
-                        self._process_html_report(report['rcept_no'])
+                        self._process_html_report_simple(report['rcept_no'])
                         
                         # Step 4: HTML Archive 업데이트
                         print("\n🔸 Step 4: HTML Archive 업데이트")
@@ -426,26 +426,26 @@ class DartDualUpdater:
             print(f"❌ Excel 다운로드 실패: {str(e)}")
             self.results['xbrl']['failed_downloads'].append(f"Excel_{rcept_no}")
 
-    # === HTML 스크래핑 관련 메서드 (수정된 부분) ===
-    def _process_html_report(self, rcept_no):
-        """HTML 보고서 처리 (개선된 오류 처리)"""
+    # === HTML 스크래핑 관련 메서드 (완전히 재작성) ===
+    def _process_html_report_simple(self, rcept_no):
+        """HTML 보고서 처리 (단순화된 버전)"""
         try:
             print(f"\n🌐 HTML 처리: 보고서 접수번호 {rcept_no}")
             
-            # 보고서 하위 문서 목록 조회 (재시도 로직 포함)
+            # 보고서 하위 문서 목록 조회
             report_index = self._get_report_index_with_retry(rcept_no)
             if report_index is None or report_index.empty:
                 print("⚠️ 보고서 하위 문서를 찾을 수 없습니다.")
                 return
             
-            # HTML 대상 시트만 필터링 (재무제표 관련 제외)
+            # HTML 대상 시트만 필터링
             target_docs = report_index[report_index['title'].isin(self.HTML_TARGET_SHEETS)]
             
             print(f"📝 처리할 HTML 문서: {len(target_docs)}개")
             
             for _, doc in target_docs.iterrows():
-                self._update_html_worksheet_safe(doc['title'], doc['url'])
-                time.sleep(2)  # 각 문서 간 대기 증가
+                self._update_worksheet_simple(doc['title'], doc['url'])
+                time.sleep(2)  # 각 문서 간 대기
                 
         except Exception as e:
             print(f"❌ HTML 보고서 처리 실패: {str(e)}")
@@ -469,8 +469,8 @@ class DartDualUpdater:
         
         return None
 
-    def _update_html_worksheet_safe(self, sheet_name, url):
-        """HTML 워크시트 업데이트 (안전한 버전)"""
+    def _update_worksheet_simple(self, sheet_name, url):
+        """워크시트 업데이트 (기존 삼성SDS 코드 방식 적용)"""
         max_retries = 3
         retry_delay = 5
         
@@ -490,94 +490,67 @@ class DartDualUpdater:
                     print(f"🆕 새 시트 생성: {sheet_name}")
                     time.sleep(2)
                 
-                # HTTP 요청을 더 안정적으로 처리
-                success = self._fetch_html_content_safe(url, worksheet)
+                # HTTP 요청 (기존 방식 사용)
+                response = requests.get(url, timeout=30)
                 
-                if success:
-                    print(f"✅ HTML 시트 업데이트 완료: {sheet_name}")
-                    self.results['html']['processed_sheets'].append(sheet_name)
-                    return
-                else:
-                    if attempt < max_retries - 1:
-                        print(f"⏳ {retry_delay}초 후 재시도...")
-                        time.sleep(retry_delay)
-                        retry_delay *= 1.5
-                        continue
-                    else:
-                        print(f"❌ 최종 실패: {sheet_name}")
-                        self.results['html']['failed_sheets'].append(sheet_name)
+                if response.status_code == 200:
+                    content_length = len(response.content)
+                    print(f"📥 콘텐츠 크기: {content_length:,} bytes")
+                    
+                    if content_length < 100:
+                        print(f"⚠️ 콘텐츠가 너무 작습니다: {content_length} bytes")
+                        if attempt < max_retries - 1:
+                            time.sleep(retry_delay)
+                            continue
+                    
+                    # HTML 처리 (완전히 단순화)
+                    success = self._process_html_content_simple(worksheet, response.text)
+                    
+                    if success:
+                        print(f"✅ HTML 시트 업데이트 완료: {sheet_name}")
+                        self.results['html']['processed_sheets'].append(sheet_name)
                         return
-                        
+                    else:
+                        if attempt < max_retries - 1:
+                            print(f"⏳ {retry_delay}초 후 재시도...")
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            print(f"❌ 최종 실패: {sheet_name}")
+                            self.results['html']['failed_sheets'].append(sheet_name)
+                            return
+                else:
+                    print(f"⚠️ HTTP {response.status_code}: {sheet_name}")
+                    
+            except requests.exceptions.Timeout:
+                print(f"⚠️ 타임아웃 (시도 {attempt + 1}/{max_retries}): {sheet_name}")
+            except requests.exceptions.ConnectionError as e:
+                print(f"⚠️ 연결 오류 (시도 {attempt + 1}/{max_retries}): {sheet_name} - {str(e)}")
             except Exception as e:
                 print(f"❌ HTML 워크시트 업데이트 실패 ({sheet_name}): {str(e)}")
                 if attempt == max_retries - 1:
                     self.results['html']['failed_sheets'].append(sheet_name)
                 return
+            
+            if attempt < max_retries - 1:
+                print(f"⏳ {retry_delay:.1f}초 후 재시도...")
+                time.sleep(retry_delay)
+                retry_delay *= 1.5
+        
+        print(f"❌ 최종 실패: {sheet_name}")
+        self.results['html']['failed_sheets'].append(sheet_name)
 
-    def _fetch_html_content_safe(self, url, worksheet):
-        """안전한 HTML 컨텐츠 가져오기 및 처리"""
+    def _process_html_content_simple(self, worksheet, html_content):
+        """HTML 내용 처리 (기존 삼성SDS 방식 적용)"""
         try:
-            # 향상된 세션 설정
-            session = requests.Session()
-            session.headers.update({
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'ko-KR,ko;q=0.8,en;q=0.3',
-                'Connection': 'keep-alive',
-                'Cache-Control': 'no-cache'
-            })
+            # BeautifulSoup으로 파싱
+            soup = BeautifulSoup(html_content, 'html.parser')
+            tables = soup.find_all("table")
             
-            # 연결 풀 설정
-            adapter = requests.adapters.HTTPAdapter(
-                pool_connections=1, 
-                pool_maxsize=1,
-                max_retries=requests.adapters.Retry(
-                    total=2,
-                    backoff_factor=2,
-                    status_forcelist=[500, 502, 503, 504],
-                    allowed_methods=["GET"]
-                )
-            )
-            session.mount('http://', adapter)
-            session.mount('https://', adapter)
-            
-            # 요청 실행
-            response = session.get(url, timeout=30, stream=False)
-            response.raise_for_status()
-            
-            content_length = len(response.content)
-            print(f"📥 콘텐츠 크기: {content_length:,} bytes")
-            
-            if content_length < 100:
-                print(f"⚠️ 콘텐츠가 너무 작습니다: {content_length} bytes")
-                return False
-            
-            # HTML 처리
-            success = self._process_html_content_safe(worksheet, response.text)
-            session.close()
-            
-            return success
-                
-        except requests.exceptions.Timeout:
-            print(f"⚠️ 타임아웃 발생")
-            return False
-        except requests.exceptions.ConnectionError as e:
-            print(f"⚠️ 연결 오류: {str(e)}")
-            return False
-        except requests.exceptions.RequestException as e:
-            print(f"⚠️ 요청 오류: {str(e)}")
-            return False
-        except Exception as e:
-            print(f"⚠️ 예상치 못한 오류: {str(e)}")
-            return False
-
-    def _process_html_content_safe(self, worksheet, html_content):
-        """HTML 내용 처리 (안전한 버전)"""
-        try:
             # 워크시트 클리어
             self._execute_sheets_operation_with_retry(worksheet.clear)
             
-            # 기본 메타데이터
+            # 메타데이터 추가
             meta_data = [
                 [f"업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"],
                 [f"보고서: {self.current_report.get('rcept_no', '') if self.current_report else ''}"],
@@ -589,16 +562,11 @@ class DartDualUpdater:
             if not html_content or len(html_content.strip()) < 100:
                 print("⚠️ HTML 컨텐츠가 비어있거나 너무 짧습니다.")
                 error_data = meta_data + [["오류: HTML 컨텐츠가 비어있음"]]
-                self._safe_batch_update(worksheet, error_data)
-                return True
+                return self._simple_batch_update(worksheet, error_data)
             
-            # BeautifulSoup으로 파싱
-            soup = BeautifulSoup(html_content, 'html.parser')
-            tables = soup.find_all("table")
-            
+            # 테이블 데이터 수집
             all_data = meta_data.copy()
             
-            # 테이블 처리
             if tables:
                 for table_idx, table in enumerate(tables):
                     try:
@@ -610,23 +578,22 @@ class DartDualUpdater:
                             all_data.append([])  # 구분을 위한 빈 행
                     except Exception as e:
                         print(f"⚠️ 테이블 {table_idx + 1} 파싱 오류: {str(e)}")
-                        all_data.append([f"테이블 {table_idx + 1} 파싱 오류: {str(e)[:100]}"])
+                        all_data.append([f"테이블 {table_idx + 1} 파싱 오류"])
                         continue
             else:
                 # 테이블이 없으면 텍스트 내용 추출
                 text_content = soup.get_text()
                 if text_content and len(text_content.strip()) > 50:
-                    # 텍스트를 적당한 길이로 분할
                     lines = text_content.split('\n')
-                    for line in lines[:100]:  # 최대 100줄
+                    for line in lines[:50]:  # 최대 50줄
                         clean_line = line.strip()
                         if clean_line and len(clean_line) > 2:
-                            all_data.append([clean_line[:500]])  # 최대 500자
+                            all_data.append([clean_line[:200]])  # 최대 200자
                 else:
                     all_data.append(["텍스트 컨텐츠를 찾을 수 없습니다."])
             
-            # 데이터 업로드
-            return self._safe_batch_update(worksheet, all_data)
+            # 단순한 배치 업데이트 (기존 SDS 방식)
+            return self._simple_batch_update(worksheet, all_data)
             
         except Exception as e:
             print(f"❌ HTML 콘텐츠 처리 실패: {str(e)}")
@@ -637,35 +604,24 @@ class DartDualUpdater:
                     [f"오류 내용: {str(e)[:100]}"],
                     [f"보고서: {self.current_report.get('rcept_no', '') if self.current_report else ''}"]
                 ]
-                self._safe_batch_update(worksheet, error_data)
+                self._simple_batch_update(worksheet, error_data)
             except:
                 pass
             return False
 
-    def _safe_batch_update(self, worksheet, all_data):
-        """안전한 배치 업데이트"""
+    def _simple_batch_update(self, worksheet, all_data):
+        """단순한 배치 업데이트 (기존 SDS 방식)"""
         try:
             if not all_data:
                 return False
                 
-            # 배치 크기 제한
-            BATCH_SIZE = 200
-            
+            # 기존 방식: append_rows 사용
+            BATCH_SIZE = 100
             for i in range(0, len(all_data), BATCH_SIZE):
                 batch = all_data[i:i + BATCH_SIZE]
                 try:
-                    end_row = i + len(batch)
-                    
-                    # 최대 열 수 계산 (빈 행 처리)
-                    max_cols = 1
-                    for row in batch:
-                        if row:
-                            max_cols = max(max_cols, len(row))
-                    
-                    end_col_letter = self._get_column_letter(max_cols - 1)
-                    range_name = f'A{i+1}:{end_col_letter}{end_row}'
-                    
-                    # 각 행의 길이를 max_cols에 맞춤
+                    # 각 행의 길이를 동일하게 맞춤
+                    max_cols = max(len(row) if row else 1 for row in batch)
                     normalized_batch = []
                     for row in batch:
                         if not row:
@@ -674,14 +630,19 @@ class DartDualUpdater:
                             normalized_row = row + [''] * (max_cols - len(row))
                         normalized_batch.append(normalized_row)
                     
-                    self._execute_sheets_operation_with_retry(
-                        worksheet.update, 
-                        values=normalized_batch, 
-                        range_name=range_name
-                    )
-                    
+                    # append_rows 사용 (기존 방식)
+                    worksheet.append_rows(normalized_batch)
+                    print(f"배치 업데이트 완료: {i+1}~{min(i+BATCH_SIZE, len(all_data))} 행")
                     time.sleep(1)  # API 제한 회피
                     
+                except gspread.exceptions.APIError as e:
+                    if 'Quota exceeded' in str(e):
+                        print("할당량 제한 도달. 60초 대기 후 재시도...")
+                        time.sleep(60)
+                        worksheet.append_rows(normalized_batch)
+                    else:
+                        print(f"⚠️ 배치 {i+1}-{i+len(batch)} 업데이트 실패: {str(e)}")
+                        continue
                 except Exception as e:
                     print(f"⚠️ 배치 {i+1}-{i+len(batch)} 업데이트 실패: {str(e)}")
                     continue
@@ -693,7 +654,7 @@ class DartDualUpdater:
             return False
 
     def _update_html_archive_for_current_report(self):
-        """현재 보고서의 HTML Archive 업데이트 (수정된 키워드 검색)"""
+        """현재 보고서의 HTML Archive 업데이트 (기존 SDS 방식 적용)"""
         print("📊 현재 문서 HTML Archive 업데이트 중...")
         
         try:
@@ -727,14 +688,14 @@ class DartDualUpdater:
             except:
                 last_col += 1
             
-            self._process_archive_data_safe(archive, 10, last_col)
+            self._process_archive_data_simple(archive, 10, last_col)
             print("✅ 현재 문서 HTML Archive 업데이트 완료")
             
         except Exception as e:
             print(f"❌ 현재 문서 HTML Archive 업데이트 실패: {str(e)}")
 
-    def _process_archive_data_safe(self, archive, start_row, last_col):
-        """아카이브 데이터 처리 (안전한 버전)"""
+    def _process_archive_data_simple(self, archive, start_row, last_col):
+        """아카이브 데이터 처리 (기존 SDS 방식 적용)"""
         try:
             current_cols = archive.col_count
             target_col_letter = self._get_column_letter(last_col)
@@ -754,168 +715,118 @@ class DartDualUpdater:
                     print(f"시트 크기 조정 중 오류: {str(e)}")
                     return
 
-            # 모든 행 데이터 가져오기
+            # 데이터 수집 (기존 SDS 방식)
             all_rows = self._execute_sheets_operation_with_retry(archive.get_all_values)
+            update_data = []
+            sheet_cache = {}
             
-            # 키워드 검색 작업 수집
-            keyword_tasks = []
-            
+            # 시트별로 행 그룹화
+            sheet_rows = {}
             for row_idx in range(start_row - 1, len(all_rows)):
                 if len(all_rows[row_idx]) < 5:
                     continue
                     
                 sheet_name = all_rows[row_idx][0]
-                keyword = all_rows[row_idx][1]
-                n = all_rows[row_idx][2]
-                x = all_rows[row_idx][3]
-                y = all_rows[row_idx][4]
+                if not sheet_name:
+                    continue
                 
-                if sheet_name and keyword and n and x and y:
-                    try:
-                        keyword_tasks.append({
-                            'row_idx': row_idx + 1,
-                            'sheet_name': sheet_name,
-                            'keyword': keyword,
-                            'n': int(n),
-                            'x': int(x),
-                            'y': int(y)
-                        })
-                    except ValueError:
-                        continue
-            
-            print(f"총 처리할 키워드: {len(keyword_tasks)}개")
-            
-            # 시트별로 데이터 로드
-            sheet_cache = {}
-            sheets_to_load = set(task['sheet_name'] for task in keyword_tasks)
-            
-            for sheet_name in sheets_to_load:
-                try:
-                    search_sheet = self._execute_sheets_operation_with_retry(
-                        self.workbook.worksheet, sheet_name
-                    )
-                    sheet_data = self._execute_sheets_operation_with_retry(
-                        search_sheet.get_all_values
-                    )
+                if sheet_name not in sheet_rows:
+                    sheet_rows[sheet_name] = []
                     
-                    if sheet_data:
-                        # DataFrame 생성 시 안전한 처리
-                        filtered_data = [row for row in sheet_data if any(cell for cell in row)]
-                        if filtered_data:
-                            df = pd.DataFrame(filtered_data)
-                            sheet_cache[sheet_name] = df
-                        else:
-                            sheet_cache[sheet_name] = pd.DataFrame()
-                    else:
-                        sheet_cache[sheet_name] = pd.DataFrame()
+                sheet_rows[sheet_name].append({
+                    'row_idx': row_idx + 1,
+                    'keyword': all_rows[row_idx][1],
+                    'n': all_rows[row_idx][2],
+                    'x': all_rows[row_idx][3],
+                    'y': all_rows[row_idx][4]
+                })
+            
+            # 시트별 처리 (기존 SDS 방식)
+            for sheet_name, rows in sheet_rows.items():
+                try:
+                    print(f"\n시트 '{sheet_name}' 처리 중...")
+                    
+                    if sheet_name not in sheet_cache:
+                        search_sheet = self._execute_sheets_operation_with_retry(
+                            self.workbook.worksheet, sheet_name
+                        )
+                        sheet_data = self._execute_sheets_operation_with_retry(
+                            search_sheet.get_all_values
+                        )
+                        # pandas 없이 처리
+                        sheet_cache[sheet_name] = sheet_data
+                        print(f"시트 '{sheet_name}' 데이터 로드 완료")
+                    
+                    sheet_data = sheet_cache[sheet_name]
+                    
+                    for row in rows:
+                        keyword = row['keyword']
+                        if not keyword or not row['n'] or not row['x'] or not row['y']:
+                            continue
                         
+                        try:
+                            n = int(row['n'])
+                            x = int(row['x'])
+                            y = int(row['y'])
+                            
+                            # 키워드 검색 (기존 SDS 방식)
+                            keyword_positions = []
+                            for row_idx, sheet_row in enumerate(sheet_data):
+                                for col_idx, value in enumerate(sheet_row):
+                                    if str(value) == str(keyword):
+                                        keyword_positions.append((row_idx, col_idx))
+                            
+                            print(f"키워드 '{keyword}' 검색 결과: {len(keyword_positions)}개 발견")
+                            
+                            if keyword_positions and len(keyword_positions) >= n:
+                                target_pos = keyword_positions[n - 1]
+                                target_row = target_pos[0] + y
+                                target_col = target_pos[1] + x
+                                
+                                if (target_row >= 0 and target_row < len(sheet_data) and 
+                                    target_col >= 0 and target_col < len(sheet_data[target_row])):
+                                    value = sheet_data[target_row][target_col]
+                                    cleaned_value = self._remove_parentheses(str(value))
+                                    print(f"찾은 값: {cleaned_value}")
+                                    update_data.append((row['row_idx'], cleaned_value))
+                        
+                        except Exception as e:
+                            print(f"행 {row['row_idx']} 처리 중 오류: {str(e)}")
+                
                 except gspread.exceptions.WorksheetNotFound:
                     print(f"⚠️ 시트 '{sheet_name}'를 찾을 수 없습니다.")
                     continue
                 except Exception as e:
-                    print(f"⚠️ 시트 '{sheet_name}' 로드 중 오류: {str(e)}")
+                    print(f"⚠️ 시트 '{sheet_name}' 처리 중 오류: {str(e)}")
                     continue
             
-            # 키워드 검색 및 값 추출
-            update_results = []
+            print(f"📊 업데이트할 데이터: {len(update_data)}개")
             
-            for task in keyword_tasks:
-                sheet_name = task['sheet_name']
-                
-                if sheet_name not in sheet_cache:
-                    continue
-                
-                df = sheet_cache[sheet_name]
-                
-                if df.empty:
-                    continue
-                
-                try:
-                    # 안전한 키워드 검색
-                    keyword_positions = self._find_keyword_positions_safe(df, task['keyword'])
-                    
-                    if keyword_positions and len(keyword_positions) >= task['n']:
-                        target_pos = keyword_positions[task['n'] - 1]
-                        target_row = target_pos[0] + task['y']
-                        target_col = target_pos[1] + task['x']
-                        
-                        if (0 <= target_row < df.shape[0] and 
-                            0 <= target_col < df.shape[1]):
-                            value = df.iat[target_row, target_col]
-                            cleaned_value = self._remove_parentheses(str(value))
-                            update_results.append((task['row_idx'], cleaned_value))
-                        
-                except Exception as e:
-                    print(f"⚠️ 키워드 '{task['keyword']}' 처리 중 오류: {str(e)}")
-                    continue
-            
-            print(f"📊 업데이트할 데이터: {len(update_results)}개")
-            
-            # 배치 업데이트 실행
-            if update_results:
-                self._execute_batch_archive_update_safe(archive, update_results, target_col_letter, last_col)
+            # 배치 업데이트 실행 (기존 SDS 방식)
+            if update_data:
+                self._execute_batch_archive_update_simple(archive, update_data, target_col_letter, last_col)
             
         except Exception as e:
             print(f"❌ 아카이브 처리 중 오류: {str(e)}")
 
-    def _find_keyword_positions_safe(self, df, keyword):
-        """안전한 키워드 검색 (pandas Series 오류 방지)"""
-        positions = []
-        
-        # DataFrame 검증
-        if df.empty or df.shape[0] == 0 or df.shape[1] == 0:
-            return positions
-        
+    def _execute_batch_archive_update_simple(self, archive, update_data, target_col_letter, last_col):
+        """단순한 배치 아카이브 업데이트 (기존 SDS 방식)"""
         try:
-            # 완전 일치 검색
-            for row_idx in range(df.shape[0]):
-                for col_idx in range(df.shape[1]):
-                    try:
-                        cell_value = df.iat[row_idx, col_idx]
-                        if cell_value is not None:
-                            cell_str = str(cell_value).strip()
-                            if cell_str == keyword:
-                                positions.append((row_idx, col_idx))
-                    except (IndexError, AttributeError, ValueError):
-                        continue
-            
-            # 부분 일치 검색 (완전 일치가 없는 경우)
-            if not positions and keyword:
-                for row_idx in range(df.shape[0]):
-                    for col_idx in range(df.shape[1]):
-                        try:
-                            cell_value = df.iat[row_idx, col_idx]
-                            if cell_value is not None:
-                                cell_str = str(cell_value).strip()
-                                if keyword in cell_str or cell_str in keyword:
-                                    positions.append((row_idx, col_idx))
-                        except (IndexError, AttributeError, ValueError):
-                            continue
-        
-        except Exception as e:
-            print(f"⚠️ 키워드 '{keyword}' 검색 중 오류: {str(e)}")
-        
-        return positions
-
-    def _execute_batch_archive_update_safe(self, archive, update_results, target_col_letter, last_col):
-        """안전한 배치 아카이브 업데이트"""
-        try:
-            if not update_results:
+            if not update_data:
                 return
                 
             # 업데이트할 범위 계산
-            min_row = min(row for row, _ in update_results)
-            max_row = max(row for row, _ in update_results)
+            min_row = min(row for row, _ in update_data)
+            max_row = max(row for row, _ in update_data)
             
             # 열 데이터 준비
-            column_data = [''] * (max_row - min_row + 1)
+            column_data = []
+            for _ in range(max_row - min_row + 1):
+                column_data.append([''])
             
-            for row, value in update_results:
+            for row, value in update_data:
                 adjusted_row = row - min_row
-                column_data[adjusted_row] = str(value) if value else ''
-            
-            # 2D 배열 변환
-            column_data_2d = [[cell] for cell in column_data]
+                column_data[adjusted_row] = [str(value) if value else '']
             
             # 배치 업데이트
             range_label = f'{target_col_letter}{min_row}:{target_col_letter}{max_row}'
@@ -924,7 +835,7 @@ class DartDualUpdater:
             self._execute_sheets_operation_with_retry(
                 archive.batch_update, [{
                     'range': range_label,
-                    'values': column_data_2d
+                    'values': column_data
                 }]
             )
             
@@ -943,7 +854,18 @@ class DartDualUpdater:
                 archive.batch_update, meta_updates
             )
             
-            print(f"✅ 배치 업데이트 완료: {len(update_results)}개 항목")
+            print(f"✅ 배치 업데이트 완료: {len(update_data)}개 항목")
+            
+            # 텔레그램 알림
+            message = (
+                f"🔄 HTML Archive 배치 업데이트 완료\n\n"
+                f"• 종목: {self.company_name} ({self.corp_code})\n"
+                f"• 분기: {quarter_info}\n"
+                f"• 업데이트 일시: {today.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"• 처리된 키워드: {len(update_data)}개\n"
+                f"• 시트 열: {target_col_letter} (#{last_col})"
+            )
+            self._send_telegram_message(message)
             
         except Exception as e:
             print(f"❌ 배치 업데이트 실패: {str(e)}")
@@ -957,7 +879,7 @@ class DartDualUpdater:
         except:
             return str(value)
 
-    # === 나머지 메서드들은 동일하게 유지 ===
+    # === 나머지 메서드들 (XBRL 관련) ===
     
     def _upload_excel_to_sheets(self, file_path, file_type, rcept_no):
         """Excel 파일을 Google Sheets에 업로드"""
