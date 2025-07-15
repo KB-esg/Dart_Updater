@@ -695,44 +695,51 @@ class DartDualUpdater:
             print(f"❌ 현재 문서 HTML Archive 업데이트 실패: {str(e)}")
 
     def _process_archive_data_simple(self, archive, start_row, last_col):
-        """아카이브 데이터 처리 (기존 SDS 방식 적용)"""
+        """아카이브 데이터 처리 (완전한 기존 SDS 방식 적용)"""
         try:
             current_cols = archive.col_count
+            current_col_letter = self._get_column_letter(current_cols)
             target_col_letter = self._get_column_letter(last_col)
             
             print(f"시작 행: {start_row}, 대상 열: {last_col} ({target_col_letter})")
+            print(f"현재 시트 열 수: {current_cols} ({current_col_letter})")
             
             # 필요한 경우 시트 크기 조정
             if last_col >= current_cols:
-                new_cols = last_col + 5
+                new_cols = last_col + 5  # 여유 있게 5열 추가
                 try:
+                    print(f"시트 크기를 {current_cols}({current_col_letter})에서 {new_cols}({self._get_column_letter(new_cols)})로 조정합니다.")
                     self._execute_sheets_operation_with_retry(
                         archive.resize, rows=archive.row_count, cols=new_cols
                     )
-                    time.sleep(2)
+                    time.sleep(2)  # API 호출 후 대기
                     print("시트 크기 조정 완료")
                 except Exception as e:
-                    print(f"시트 크기 조정 중 오류: {str(e)}")
-                    return
+                    print(f"시트 크기 조정 중 오류 발생: {str(e)}")
+                    raise
 
-            # 데이터 수집 (기존 SDS 방식)
+            # 데이터 수집 시작 (완전한 기존 SDS 방식)
             all_rows = self._execute_sheets_operation_with_retry(archive.get_all_values)
             update_data = []
             sheet_cache = {}
             
-            # 시트별로 행 그룹화
             sheet_rows = {}
             for row_idx in range(start_row - 1, len(all_rows)):
                 if len(all_rows[row_idx]) < 5:
+                    print(f"행 {row_idx + 1}: 데이터 부족 (컬럼 수: {len(all_rows[row_idx])})")
                     continue
                     
                 sheet_name = all_rows[row_idx][0]
                 if not sheet_name:
+                    print(f"행 {row_idx + 1}: 시트명 없음")
                     continue
+                
+                print(f"행 {row_idx + 1} 처리: 시트={sheet_name}, " + 
+                      f"키워드={all_rows[row_idx][1]}, n={all_rows[row_idx][2]}, " +
+                      f"x={all_rows[row_idx][3]}, y={all_rows[row_idx][4]}")
                 
                 if sheet_name not in sheet_rows:
                     sheet_rows[sheet_name] = []
-                    
                 sheet_rows[sheet_name].append({
                     'row_idx': row_idx + 1,
                     'keyword': all_rows[row_idx][1],
@@ -741,10 +748,11 @@ class DartDualUpdater:
                     'y': all_rows[row_idx][4]
                 })
             
-            # 시트별 처리 (기존 SDS 방식)
+            # 시트별 처리 (완전한 기존 SDS 방식)
             for sheet_name, rows in sheet_rows.items():
                 try:
                     print(f"\n시트 '{sheet_name}' 처리 중...")
+                    print(f"검색할 키워드 수: {len(rows)}")
                     
                     if sheet_name not in sheet_cache:
                         search_sheet = self._execute_sheets_operation_with_retry(
@@ -753,15 +761,16 @@ class DartDualUpdater:
                         sheet_data = self._execute_sheets_operation_with_retry(
                             search_sheet.get_all_values
                         )
-                        # pandas 없이 처리
+                        # 기존 SDS 방식: 리스트 그대로 사용 (pandas 없음)
                         sheet_cache[sheet_name] = sheet_data
-                        print(f"시트 '{sheet_name}' 데이터 로드 완료")
+                        print(f"시트 '{sheet_name}' 데이터 로드 완료 (크기: {len(sheet_data)}행)")
                     
                     sheet_data = sheet_cache[sheet_name]
                     
                     for row in rows:
                         keyword = row['keyword']
                         if not keyword or not row['n'] or not row['x'] or not row['y']:
+                            print(f"행 {row['row_idx']}: 검색 정보 부족")
                             continue
                         
                         try:
@@ -769,12 +778,12 @@ class DartDualUpdater:
                             x = int(row['x'])
                             y = int(row['y'])
                             
-                            # 키워드 검색 (기존 SDS 방식)
+                            # 완전한 기존 SDS 방식의 키워드 검색
                             keyword_positions = []
-                            for row_idx, sheet_row in enumerate(sheet_data):
+                            for idx, sheet_row in enumerate(sheet_data):
                                 for col_idx, value in enumerate(sheet_row):
-                                    if str(value) == str(keyword):
-                                        keyword_positions.append((row_idx, col_idx))
+                                    if value == keyword:  # 정확한 일치만
+                                        keyword_positions.append((idx, col_idx))
                             
                             print(f"키워드 '{keyword}' 검색 결과: {len(keyword_positions)}개 발견")
                             
@@ -783,12 +792,16 @@ class DartDualUpdater:
                                 target_row = target_pos[0] + y
                                 target_col = target_pos[1] + x
                                 
-                                if (target_row >= 0 and target_row < len(sheet_data) and 
-                                    target_col >= 0 and target_col < len(sheet_data[target_row])):
+                                if target_row >= 0 and target_row < len(sheet_data) and \
+                                   target_col >= 0 and target_col < len(sheet_data[target_row]):
                                     value = sheet_data[target_row][target_col]
                                     cleaned_value = self._remove_parentheses(str(value))
-                                    print(f"찾은 값: {cleaned_value}")
+                                    print(f"찾은 값: {cleaned_value} (키워드: {keyword})")
                                     update_data.append((row['row_idx'], cleaned_value))
+                                else:
+                                    print(f"행 {row['row_idx']}: 대상 위치가 범위를 벗어남 ({target_row}, {target_col})")
+                            else:
+                                print(f"행 {row['row_idx']}: 키워드 '{keyword}'를 {n}번째로 찾을 수 없음")
                         
                         except Exception as e:
                             print(f"행 {row['row_idx']} 처리 중 오류: {str(e)}")
@@ -797,51 +810,90 @@ class DartDualUpdater:
                     print(f"⚠️ 시트 '{sheet_name}'를 찾을 수 없습니다.")
                     continue
                 except Exception as e:
-                    print(f"⚠️ 시트 '{sheet_name}' 처리 중 오류: {str(e)}")
+                    print(f"시트 '{sheet_name}' 처리 중 오류 발생: {str(e)}")
                     continue
             
-            print(f"📊 업데이트할 데이터: {len(update_data)}개")
+            print(f"\n업데이트할 데이터 수: {len(update_data)}")
             
-            # 배치 업데이트 실행 (기존 SDS 방식)
+            # 배치 업데이트 실행 (완전한 기존 SDS 방식)
             if update_data:
-                self._execute_batch_archive_update_simple(archive, update_data, target_col_letter, last_col)
+                self._execute_batch_archive_update_sds_style(archive, update_data, target_col_letter, last_col)
             
         except Exception as e:
-            print(f"❌ 아카이브 처리 중 오류: {str(e)}")
+            error_msg = f"아카이브 처리 중 오류 발생: {str(e)}"
+            print(error_msg)
+            self._send_telegram_message(f"❌ {error_msg}")
+            raise e
 
-    def _execute_batch_archive_update_simple(self, archive, update_data, target_col_letter, last_col):
-        """단순한 배치 아카이브 업데이트 (기존 SDS 방식)"""
+    def _execute_batch_archive_update_sds_style(self, archive, update_data, target_col_letter, last_col):
+        """API 제한을 고려한 최적화된 배치 아카이브 업데이트"""
         try:
             if not update_data:
                 return
                 
-            # 업데이트할 범위 계산
-            min_row = min(row for row, _ in update_data)
-            max_row = max(row for row, _ in update_data)
+            print(f"📊 총 업데이트할 데이터: {len(update_data)}개")
             
-            # 열 데이터 준비
-            column_data = []
-            for _ in range(max_row - min_row + 1):
-                column_data.append([''])
+            # 연속된 범위별로 그룹화하여 API 호출 최소화
+            sorted_data = sorted(update_data, key=lambda x: x[0])
+            batch_groups = []
+            current_group = []
             
-            for row, value in update_data:
-                adjusted_row = row - min_row
-                column_data[adjusted_row] = [str(value) if value else '']
+            for i, (row, value) in enumerate(sorted_data):
+                if not current_group:
+                    current_group = [(row, value)]
+                elif row == sorted_data[i-1][0] + 1:  # 연속된 행
+                    current_group.append((row, value))
+                else:  # 연속되지 않은 행 - 새 그룹 시작
+                    batch_groups.append(current_group)
+                    current_group = [(row, value)]
             
-            # 배치 업데이트
-            range_label = f'{target_col_letter}{min_row}:{target_col_letter}{max_row}'
-            print(f"📤 배치 업데이트 실행: {range_label}")
+            if current_group:
+                batch_groups.append(current_group)
             
-            self._execute_sheets_operation_with_retry(
-                archive.batch_update, [{
-                    'range': range_label,
-                    'values': column_data
-                }]
-            )
+            print(f"🔄 {len(batch_groups)}개 배치 그룹으로 최적화")
             
-            # 메타데이터 업데이트
+            # 각 배치 그룹별로 처리 (API 호출 최소화)
+            total_updates = 0
+            for group_idx, group in enumerate(batch_groups):
+                try:
+                    if len(group) == 1:
+                        # 단일 셀 업데이트
+                        row, value = group[0]
+                        range_label = f'{target_col_letter}{row}'
+                        values = [[str(value) if value else '']]
+                    else:
+                        # 연속된 범위 업데이트
+                        start_row = group[0][0]
+                        end_row = group[-1][0]
+                        range_label = f'{target_col_letter}{start_row}:{target_col_letter}{end_row}'
+                        values = [[str(item[1]) if item[1] else ''] for item in group]
+                    
+                    print(f"  📤 배치 {group_idx + 1}/{len(batch_groups)}: {range_label} ({len(group)}개 셀)")
+                    
+                    self._execute_sheets_operation_with_retry(
+                        archive.update, 
+                        values=values, 
+                        range_name=range_label
+                    )
+                    
+                    total_updates += len(group)
+                    
+                    # API 제한 회피를 위한 대기
+                    if group_idx < len(batch_groups) - 1:  # 마지막 그룹이 아니면
+                        if len(batch_groups) > 10:  # 배치가 많으면 더 긴 대기
+                            time.sleep(2)
+                        else:
+                            time.sleep(1)
+                
+                except Exception as e:
+                    print(f"⚠️ 배치 {group_idx + 1} 업데이트 실패: {str(e)}")
+                    continue
+            
+            print(f"✅ 데이터 업데이트 완료: {total_updates}개 셀")
+            
+            # 메타데이터 업데이트 (단일 배치로 처리)
             today = datetime.now()
-            quarter_info = self._get_quarter_info()
+            quarter_info = self._get_quarter_info_safe()
             
             meta_updates = [
                 {'range': 'J1', 'values': [[today.strftime('%Y-%m-%d')]]},
@@ -850,25 +902,46 @@ class DartDualUpdater:
                 {'range': f'{target_col_letter}6', 'values': [[quarter_info]]}
             ]
             
+            print("📋 메타데이터 업데이트 중...")
             self._execute_sheets_operation_with_retry(
                 archive.batch_update, meta_updates
             )
-            
-            print(f"✅ 배치 업데이트 완료: {len(update_data)}개 항목")
+            print(f"✅ 메타데이터 업데이트 완료 (분기: {quarter_info})")
             
             # 텔레그램 알림
             message = (
-                f"🔄 HTML Archive 배치 업데이트 완료\n\n"
+                f"🔄 DART Archive 업데이트 완료\n\n"
                 f"• 종목: {self.company_name} ({self.corp_code})\n"
                 f"• 분기: {quarter_info}\n"
                 f"• 업데이트 일시: {today.strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"• 처리된 키워드: {len(update_data)}개\n"
+                f"• 처리된 키워드: {total_updates}개\n"
+                f"• 배치 그룹: {len(batch_groups)}개\n"
                 f"• 시트 열: {target_col_letter} (#{last_col})"
             )
             self._send_telegram_message(message)
             
         except Exception as e:
-            print(f"❌ 배치 업데이트 실패: {str(e)}")
+            error_msg = f"배치 업데이트 중 오류 발생: {str(e)}"
+            print(error_msg)
+            self._send_telegram_message(f"❌ {error_msg}")
+            raise e
+            
+    def _get_quarter_info_safe(self):
+        """안전한 분기 정보 반환 (기존 SDS 방식)"""
+        try:
+            today = datetime.now()
+            three_months_ago = today - timedelta(days=90)
+            year = str(three_months_ago.year)[2:]
+            quarter = (three_months_ago.month - 1) // 3 + 1
+            quarter_text = f"{quarter}Q{year}"
+            return quarter_text
+        except Exception as e:
+            print(f"⚠️ 분기 정보 계산 중 오류: {str(e)}")
+            # 기본값 반환
+            now = datetime.now()
+            quarter = (now.month - 1) // 3 + 1
+            year = str(now.year)[2:]
+            return f"{quarter}Q{year}"
 
     def _remove_parentheses(self, value):
         """괄호 내용 제거"""
