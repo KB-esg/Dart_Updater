@@ -654,7 +654,7 @@ class DartDualUpdater:
             return False
 
     def _update_html_archive_for_current_report(self):
-        """현재 보고서의 HTML Archive 업데이트 (기존 SDS 방식 적용)"""
+        """현재 보고서의 HTML Archive 업데이트 (최적화된 DataFrame 방식)"""
         print("📊 현재 문서 HTML Archive 업데이트 중...")
         
         try:
@@ -688,14 +688,15 @@ class DartDualUpdater:
             except:
                 last_col += 1
             
-            self._process_archive_data_simple(archive, 10, last_col)
+            # 최적화된 방식으로 처리
+            self._process_archive_data_optimized(archive, 10, last_col)
             print("✅ 현재 문서 HTML Archive 업데이트 완료")
             
         except Exception as e:
             print(f"❌ 현재 문서 HTML Archive 업데이트 실패: {str(e)}")
 
-    def _process_archive_data_simple(self, archive, start_row, last_col):
-        """아카이브 데이터 처리 (완전한 기존 SDS 방식 적용)"""
+    def _process_archive_data_optimized(self, archive, start_row, last_col):
+        """최적화된 아카이브 데이터 처리 (DataFrame 기반 + 단일 배치 업데이트)"""
         try:
             current_cols = archive.col_count
             current_col_letter = self._get_column_letter(current_cols)
@@ -706,121 +707,209 @@ class DartDualUpdater:
             
             # 필요한 경우 시트 크기 조정
             if last_col >= current_cols:
-                new_cols = last_col + 5  # 여유 있게 5열 추가
+                new_cols = last_col + 5
                 try:
                     print(f"시트 크기를 {current_cols}({current_col_letter})에서 {new_cols}({self._get_column_letter(new_cols)})로 조정합니다.")
                     self._execute_sheets_operation_with_retry(
                         archive.resize, rows=archive.row_count, cols=new_cols
                     )
-                    time.sleep(2)  # API 호출 후 대기
+                    time.sleep(2)
                     print("시트 크기 조정 완료")
                 except Exception as e:
                     print(f"시트 크기 조정 중 오류 발생: {str(e)}")
                     raise
 
-            # 데이터 수집 시작 (완전한 기존 SDS 방식)
+            # 1단계: Archive에서 검색 작업 목록 읽기 (1번 API 호출)
+            print("📋 Archive에서 검색 작업 목록 로드 중...")
             all_rows = self._execute_sheets_operation_with_retry(archive.get_all_values)
-            update_data = []
-            sheet_cache = {}
             
-            sheet_rows = {}
+            # 검색 작업을 시트별로 그룹화
+            search_tasks_by_sheet = {}
             for row_idx in range(start_row - 1, len(all_rows)):
                 if len(all_rows[row_idx]) < 5:
-                    print(f"행 {row_idx + 1}: 데이터 부족 (컬럼 수: {len(all_rows[row_idx])})")
                     continue
                     
                 sheet_name = all_rows[row_idx][0]
-                if not sheet_name:
-                    print(f"행 {row_idx + 1}: 시트명 없음")
+                keyword = all_rows[row_idx][1]
+                n = all_rows[row_idx][2]
+                x = all_rows[row_idx][3]
+                y = all_rows[row_idx][4]
+                
+                if not sheet_name or not keyword:
                     continue
                 
-                print(f"행 {row_idx + 1} 처리: 시트={sheet_name}, " + 
-                      f"키워드={all_rows[row_idx][1]}, n={all_rows[row_idx][2]}, " +
-                      f"x={all_rows[row_idx][3]}, y={all_rows[row_idx][4]}")
-                
-                if sheet_name not in sheet_rows:
-                    sheet_rows[sheet_name] = []
-                sheet_rows[sheet_name].append({
-                    'row_idx': row_idx + 1,
-                    'keyword': all_rows[row_idx][1],
-                    'n': all_rows[row_idx][2],
-                    'x': all_rows[row_idx][3],
-                    'y': all_rows[row_idx][4]
-                })
-            
-            # 시트별 처리 (완전한 기존 SDS 방식)
-            for sheet_name, rows in sheet_rows.items():
                 try:
-                    print(f"\n시트 '{sheet_name}' 처리 중...")
-                    print(f"검색할 키워드 수: {len(rows)}")
+                    search_task = {
+                        'archive_row': row_idx + 1,
+                        'keyword': keyword,
+                        'n': int(n),
+                        'x': int(x),
+                        'y': int(y)
+                    }
                     
-                    if sheet_name not in sheet_cache:
-                        search_sheet = self._execute_sheets_operation_with_retry(
-                            self.workbook.worksheet, sheet_name
-                        )
-                        sheet_data = self._execute_sheets_operation_with_retry(
-                            search_sheet.get_all_values
-                        )
-                        # 기존 SDS 방식: 리스트 그대로 사용 (pandas 없음)
-                        sheet_cache[sheet_name] = sheet_data
-                        print(f"시트 '{sheet_name}' 데이터 로드 완료 (크기: {len(sheet_data)}행)")
+                    if sheet_name not in search_tasks_by_sheet:
+                        search_tasks_by_sheet[sheet_name] = []
+                    search_tasks_by_sheet[sheet_name].append(search_task)
                     
-                    sheet_data = sheet_cache[sheet_name]
-                    
-                    for row in rows:
-                        keyword = row['keyword']
-                        if not keyword or not row['n'] or not row['x'] or not row['y']:
-                            print(f"행 {row['row_idx']}: 검색 정보 부족")
-                            continue
-                        
-                        try:
-                            n = int(row['n'])
-                            x = int(row['x'])
-                            y = int(row['y'])
-                            
-                            # 완전한 기존 SDS 방식의 키워드 검색
-                            keyword_positions = []
-                            for idx, sheet_row in enumerate(sheet_data):
-                                for col_idx, value in enumerate(sheet_row):
-                                    if value == keyword:  # 정확한 일치만
-                                        keyword_positions.append((idx, col_idx))
-                            
-                            print(f"키워드 '{keyword}' 검색 결과: {len(keyword_positions)}개 발견")
-                            
-                            if keyword_positions and len(keyword_positions) >= n:
-                                target_pos = keyword_positions[n - 1]
-                                target_row = target_pos[0] + y
-                                target_col = target_pos[1] + x
-                                
-                                if target_row >= 0 and target_row < len(sheet_data) and \
-                                   target_col >= 0 and target_col < len(sheet_data[target_row]):
-                                    value = sheet_data[target_row][target_col]
-                                    cleaned_value = self._remove_parentheses(str(value))
-                                    print(f"찾은 값: {cleaned_value} (키워드: {keyword})")
-                                    update_data.append((row['row_idx'], cleaned_value))
-                                else:
-                                    print(f"행 {row['row_idx']}: 대상 위치가 범위를 벗어남 ({target_row}, {target_col})")
-                            else:
-                                print(f"행 {row['row_idx']}: 키워드 '{keyword}'를 {n}번째로 찾을 수 없음")
-                        
-                        except Exception as e:
-                            print(f"행 {row['row_idx']} 처리 중 오류: {str(e)}")
+                except (ValueError, TypeError):
+                    print(f"⚠️ 행 {row_idx + 1}: 잘못된 검색 파라미터")
+                    continue
+            
+            print(f"📊 총 {len(search_tasks_by_sheet)}개 시트에서 검색 작업 수행")
+            
+            # 2단계: 시트별로 DataFrame 로드 및 모든 검색 수행
+            all_results = {}  # {archive_row: value}
+            
+            for sheet_name, tasks in search_tasks_by_sheet.items():
+                print(f"\n🔍 시트 '{sheet_name}' 처리 중 ({len(tasks)}개 키워드)...")
                 
+                try:
+                    # 시트 데이터를 한 번만 로드 (1번 API 호출)
+                    search_sheet = self._execute_sheets_operation_with_retry(
+                        self.workbook.worksheet, sheet_name
+                    )
+                    sheet_data = self._execute_sheets_operation_with_retry(
+                        search_sheet.get_all_values
+                    )
+                    
+                    if not sheet_data:
+                        print(f"⚠️ 시트 '{sheet_name}'가 비어있습니다.")
+                        continue
+                    
+                    # DataFrame으로 변환 (메모리에서 빠른 검색을 위해)
+                    df = pd.DataFrame(sheet_data)
+                    print(f"📊 시트 크기: {df.shape}")
+                    
+                    # 해당 시트의 모든 키워드를 메모리에서 검색
+                    for task in tasks:
+                        try:
+                            value = self._search_keyword_in_dataframe(df, task)
+                            if value is not None:
+                                all_results[task['archive_row']] = value
+                                print(f"  ✅ 키워드 '{task['keyword']}' → 값: {str(value)[:50]}")
+                            else:
+                                print(f"  ❌ 키워드 '{task['keyword']}' 찾을 수 없음")
+                        except Exception as e:
+                            print(f"  ⚠️ 키워드 '{task['keyword']}' 검색 중 오류: {str(e)}")
+                    
                 except gspread.exceptions.WorksheetNotFound:
                     print(f"⚠️ 시트 '{sheet_name}'를 찾을 수 없습니다.")
                     continue
                 except Exception as e:
-                    print(f"시트 '{sheet_name}' 처리 중 오류 발생: {str(e)}")
+                    print(f"⚠️ 시트 '{sheet_name}' 처리 중 오류: {str(e)}")
                     continue
             
-            print(f"\n업데이트할 데이터 수: {len(update_data)}")
+            print(f"\n📊 총 {len(all_results)}개 값 발견")
             
-            # 배치 업데이트 실행 (완전한 기존 SDS 방식)
-            if update_data:
-                self._execute_batch_archive_update_sds_style(archive, update_data, target_col_letter, last_col)
+            # 3단계: 모든 결과를 한 번에 업데이트 (1번 API 호출)
+            if all_results:
+                self._execute_single_batch_update(archive, all_results, target_col_letter, last_col)
+            else:
+                print("⚠️ 업데이트할 데이터가 없습니다.")
             
         except Exception as e:
-            error_msg = f"아카이브 처리 중 오류 발생: {str(e)}"
+            error_msg = f"최적화된 아카이브 처리 중 오류 발생: {str(e)}"
+            print(error_msg)
+            self._send_telegram_message(f"❌ {error_msg}")
+            raise e
+    
+    def _search_keyword_in_dataframe(self, df, task):
+        """DataFrame에서 키워드 검색 및 값 추출"""
+        try:
+            keyword = task['keyword']
+            n = task['n']
+            x = task['x']
+            y = task['y']
+            
+            # DataFrame에서 키워드 위치 찾기
+            keyword_positions = []
+            
+            # 효율적인 검색: numpy 기반
+            mask = (df == keyword)
+            positions = mask.stack()
+            keyword_positions = [(idx[0], idx[1]) for idx, value in positions.items() if value]
+            
+            if len(keyword_positions) < n:
+                return None
+            
+            # n번째 키워드 위치
+            target_pos = keyword_positions[n - 1]
+            target_row = target_pos[0] + y
+            target_col = target_pos[1] + x
+            
+            # 범위 확인
+            if (0 <= target_row < df.shape[0] and 0 <= target_col < df.shape[1]):
+                value = df.iat[target_row, target_col]
+                return self._remove_parentheses(str(value)) if value else ''
+            
+            return None
+            
+        except Exception as e:
+            print(f"    ⚠️ 키워드 검색 오류: {str(e)}")
+            return None
+    
+    def _execute_single_batch_update(self, archive, results, target_col_letter, last_col):
+        """단일 배치로 모든 결과 업데이트"""
+        try:
+            print(f"📤 단일 배치 업데이트 시작 ({len(results)}개 값)...")
+            
+            # 결과를 행 번호 순으로 정렬
+            sorted_results = sorted(results.items(), key=lambda x: x[0])
+            
+            min_row = sorted_results[0][0]
+            max_row = sorted_results[-1][0]
+            
+            # 전체 범위의 데이터 배열 생성
+            column_data = []
+            for row_num in range(min_row, max_row + 1):
+                if row_num in results:
+                    column_data.append([str(results[row_num])])
+                else:
+                    column_data.append([''])  # 빈 값
+            
+            # 단일 배치 업데이트 (1번 API 호출)
+            range_label = f'{target_col_letter}{min_row}:{target_col_letter}{max_row}'
+            print(f"📋 업데이트 범위: {range_label}")
+            
+            self._execute_sheets_operation_with_retry(
+                archive.update,
+                values=column_data,
+                range_name=range_label
+            )
+            
+            print(f"✅ 데이터 업데이트 완료: {len(results)}개 값")
+            
+            # 메타데이터 업데이트 (1번 API 호출)
+            today = datetime.now()
+            quarter_info = self._get_quarter_info_safe()
+            
+            meta_updates = [
+                {'range': 'J1', 'values': [[today.strftime('%Y-%m-%d')]]},
+                {'range': f'{target_col_letter}1', 'values': [['1']]},
+                {'range': f'{target_col_letter}5', 'values': [[today.strftime('%Y-%m-%d')]]},
+                {'range': f'{target_col_letter}6', 'values': [[quarter_info]]}
+            ]
+            
+            self._execute_sheets_operation_with_retry(
+                archive.batch_update, meta_updates
+            )
+            
+            print(f"✅ 메타데이터 업데이트 완료")
+            
+            # 성공 알림
+            message = (
+                f"🚀 DART Archive 최적화 업데이트 완료\n\n"
+                f"• 종목: {self.company_name} ({self.corp_code})\n"
+                f"• 분기: {quarter_info}\n"
+                f"• 업데이트 일시: {today.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"• 처리된 키워드: {len(results)}개\n"
+                f"• API 호출 최적화: 시트별 1회 읽기 + 1회 쓰기\n"
+                f"• 시트 열: {target_col_letter} (#{last_col})"
+            )
+            self._send_telegram_message(message)
+            
+        except Exception as e:
+            error_msg = f"단일 배치 업데이트 중 오류: {str(e)}"
             print(error_msg)
             self._send_telegram_message(f"❌ {error_msg}")
             raise e
